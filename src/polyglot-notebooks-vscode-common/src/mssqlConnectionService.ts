@@ -140,24 +140,28 @@ export class MssqlConnectionService {
      */
     public async getAvailableKernels(): Promise<IConnectionKernelInfo[]> {
         try {
+            // Ensure MSSQL extension is activated
             const api = await this.getMssqlExtensionApi();
-            if (!api?.connectionSharing) {
-                console.log('[Polyglot SQL] MSSQL extension or connectionSharing API not available');
+            if (!api) {
+                console.log('[Polyglot SQL] MSSQL extension not available');
                 return [];
             }
 
             const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
             
-            // Use type assertion since getAvailableKernels is a new API
-            const connectionSharingAny = api.connectionSharing as any;
-            if (!connectionSharingAny.getAvailableKernels) {
-                console.log('[Polyglot SQL] getAvailableKernels API not available - MSSQL extension may need updating');
+            // Call via vscode.commands since the API object may not have the new method
+            const kernels = await vscode.commands.executeCommand<IConnectionKernelInfo[]>(
+                'mssql.connectionSharing.getAvailableKernels',
+                extensionId
+            );
+            
+            if (!kernels) {
+                console.log('[Polyglot SQL] getAvailableKernels returned no kernels');
                 return [];
             }
-
-            const kernels = await connectionSharingAny.getAvailableKernels(extensionId);
+            
             console.log(`[Polyglot SQL] Got ${kernels.length} available kernels from MSSQL`);
-            return kernels as IConnectionKernelInfo[];
+            return kernels;
         } catch (error: any) {
             console.log('[Polyglot SQL] Error getting available kernels:', error?.message || error);
             return [];
@@ -173,21 +177,33 @@ export class MssqlConnectionService {
      */
     public async executeQueryOnKernel(connectionId: string, query: string): Promise<any> {
         try {
+            // Ensure MSSQL extension is activated
             const api = await this.getMssqlExtensionApi();
-            if (!api?.connectionSharing) {
-                throw new Error('MSSQL extension or connectionSharing API not available');
+            if (!api) {
+                throw new Error('MSSQL extension not available');
             }
 
             const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
             
-            // Connect to get a connectionUri
-            const connectionUri = await api.connectionSharing.connect(extensionId, connectionId);
+            // Connect to get a connectionUri via command
+            const connectionUri = await vscode.commands.executeCommand<string>(
+                'mssql.connectionSharing.connect',
+                extensionId,
+                connectionId
+            );
+            
             if (!connectionUri) {
                 throw new Error('Failed to connect to database');
             }
+            
+            console.log(`[Polyglot SQL] Connected, uri: ${connectionUri}`);
 
-            // Execute the query
-            const result = await api.connectionSharing.executeSimpleQuery(connectionUri, query);
+            // Execute the query via command
+            const result = await vscode.commands.executeCommand<any>(
+                'mssql.connectionSharing.executeSimpleQuery',
+                connectionUri,
+                query
+            );
             
             return result;
         } catch (error: any) {

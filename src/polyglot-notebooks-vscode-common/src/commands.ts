@@ -557,6 +557,83 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             vscode.window.showErrorMessage(`Error: ${error?.message || error}`);
         }
     }));
+
+    // Connect to SQL via MSSQL proxy (no credentials exposed to Polyglot)
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSqlProxy', async () => {
+        const notebook = getCurrentNotebookDocument();
+        if (!notebook) {
+            vscode.window.showWarningMessage('Please open a notebook first.');
+            return;
+        }
+
+        const mssqlService = getMssqlConnectionService();
+        
+        try {
+            // Get available kernels from MSSQL
+            const kernels = await mssqlService.getAvailableKernels();
+            if (kernels.length === 0) {
+                vscode.window.showWarningMessage('No saved SQL connections found in MSSQL extension.');
+                return;
+            }
+
+            // Let user pick a kernel
+            const items = kernels.map(k => ({
+                label: k.name,
+                description: `${k.server} / ${k.database}`,
+                detail: `Auth: ${k.authenticationType}${k.userName ? ` (${k.userName})` : ''}`,
+                kernel: k
+            }));
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select a SQL connection to use',
+                title: 'Connect SQL (Proxy Mode - Secure)'
+            });
+
+            if (!selected) {
+                return;
+            }
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'Connecting SQL (Proxy Mode)',
+                    cancellable: false
+                },
+                async (progress) => {
+                    progress.report({ message: `Connecting to ${selected.kernel.name}...` });
+                    
+                    const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
+                    
+                    // Connect via MSSQL to get a connectionUri
+                    const connectionUri = await vscode.commands.executeCommand<string>(
+                        'mssql.connectionSharing.connect',
+                        extensionId,
+                        selected.kernel.id
+                    );
+                    
+                    if (!connectionUri) {
+                        throw new Error('Failed to connect to database');
+                    }
+                    
+                    // Store as proxy connection
+                    sqlConnectionTracker.setProxyConnection(
+                        notebook.uri.toString(),
+                        selected.kernel.name,
+                        selected.kernel.id,
+                        connectionUri
+                    );
+                    
+                    updateSqlConnectionStatusBar();
+                    
+                    vscode.window.showInformationMessage(
+                        `SQL Proxy connected: ${selected.kernel.name}. SQL cells will execute via MSSQL extension.`
+                    );
+                }
+            );
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Error: ${error?.message || error}`);
+        }
+    }));
 }
 
 export function registerFileCommands(context: vscode.ExtensionContext, parserServer: NotebookParserServer, clientMapper: ClientMapper) {

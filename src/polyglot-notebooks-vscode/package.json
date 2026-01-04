@@ -326,6 +326,11 @@
         "command": "polyglot-notebook.executeSqlViaProxy",
         "title": "Execute SQL via MSSQL Proxy (POC)",
         "icon": "$(zap)"
+      },
+      {
+        "command": "polyglot-notebook.connectSqlProxy",
+        "title": "Connect SQL (Proxy Mode - Secure)",
+        "icon": "$(shield)"
       }
     ],
     "keybindings": [
