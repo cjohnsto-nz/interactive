@@ -17,6 +17,62 @@ import { NotebookParserServer } from './notebookParserServer';
 import { PromiseCompletionSource } from './polyglot-notebooks/promiseCompletionSource';
 
 import * as constants from './constants';
+import { getMssqlConnectionService } from './mssqlConnectionService';
+import { Logger } from './polyglot-notebooks/logger';
+import * as sqlConnectionTracker from './sqlConnectionTracker';
+import * as vscodeNotebookManagement from './vscodeNotebookManagement';
+
+let sqlConnectionStatusBar: vscode.StatusBarItem | undefined;
+
+export function updateSqlConnectionStatusBar() {
+    const notebook = getCurrentNotebookDocument();
+    if (!notebook) {
+        if (sqlConnectionStatusBar) {
+            sqlConnectionStatusBar.hide();
+        }
+        // Reset context variables
+        vscode.commands.executeCommand('setContext', 'polyglotNotebook.hasSavedSqlConnection', false);
+        vscode.commands.executeCommand('setContext', 'polyglotNotebook.isSqlConnected', false);
+        vscode.commands.executeCommand('setContext', 'polyglotNotebook.isSqlNotebook', false);
+        return;
+    }
+
+    // Check if this is a SQL notebook (legacy ADS or Polyglot with SQL default)
+    const isSqlNotebook = metadataUtilities.isSqlNotebook(notebook);
+    vscode.commands.executeCommand('setContext', 'polyglotNotebook.isSqlNotebook', isSqlNotebook);
+
+    // Check for active connection first
+    const connection = sqlConnectionTracker.getConnection(notebook.uri.toString());
+    // Check for saved connection (not yet connected)
+    const savedConnection = sqlConnectionTracker.getSavedConnection(notebook.uri.toString());
+
+    // Update context variables for toolbar button visibility
+    vscode.commands.executeCommand('setContext', 'polyglotNotebook.hasSavedSqlConnection', !!savedConnection);
+    vscode.commands.executeCommand('setContext', 'polyglotNotebook.isSqlConnected', !!connection);
+
+    if (!sqlConnectionStatusBar) {
+        sqlConnectionStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    }
+
+    if (connection) {
+        // Connected - show connection name
+        sqlConnectionStatusBar.text = `$(database) ${connection.connectionName}`;
+        sqlConnectionStatusBar.tooltip = `SQL Server: ${connection.connectionName}\nKernel: #!sql-${connection.kernelName}`;
+        sqlConnectionStatusBar.backgroundColor = undefined;
+        sqlConnectionStatusBar.command = 'polyglot-notebook.changeSqlConnection';
+        sqlConnectionStatusBar.show();
+    } else if (savedConnection) {
+        // Saved but not connected - show with indicator
+        sqlConnectionStatusBar.text = `$(database) ${savedConnection} (not connected)`;
+        sqlConnectionStatusBar.tooltip = `Saved connection: ${savedConnection}\nUse toolbar Connect button`;
+        sqlConnectionStatusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        sqlConnectionStatusBar.command = 'polyglot-notebook.connectSavedSql';
+        sqlConnectionStatusBar.show();
+    } else {
+        // No connection - hide
+        sqlConnectionStatusBar.hide();
+    }
+}
 
 export async function registerAcquisitionCommands(context: vscode.ExtensionContext, diagnosticChannel: ReportChannel): Promise<void> {
     const dotnetConfig = vscode.workspace.getConfiguration(constants.DotnetConfigurationSectionName);
@@ -108,6 +164,11 @@ function getCurrentNotebookDocument(): vscode.NotebookDocument | undefined {
 }
 
 export function registerKernelCommands(context: vscode.ExtensionContext, clientMapper: ClientMapper) {
+
+    // Update status bar when active notebook changes
+    context.subscriptions.push(vscode.window.onDidChangeActiveNotebookEditor(() => {
+        updateSqlConnectionStatusBar();
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.notebookEditor.restartKernel', async (_notebookEditor) => {
         await vscode.commands.executeCommand('polyglot-notebook.restartCurrentNotebookKernel');
@@ -209,6 +270,195 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             .filter(document => clientMapper.isDotNetClient(document.uri))
             .forEach(async document => await vscode.commands.executeCommand('polyglot-notebook.stopCurrentNotebookKernel', document));
     }));
+
+    // Register Connect (to saved connection) command
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSavedSql', async () => {
+        const notebook = getCurrentNotebookDocument();
+        if (!notebook) {
+            return;
+        }
+
+        const savedConnectionId = sqlConnectionTracker.getSavedConnectionId(notebook.uri.toString());
+        const savedConnectionName = sqlConnectionTracker.getSavedConnection(notebook.uri.toString());
+
+        if (savedConnectionId) {
+            // Connect using connectionId (preferred - uses connectionSharing API)
+            console.log(`[Polyglot SQL] Connecting using connectionId: ${savedConnectionId}, name: ${savedConnectionName}`);
+            await vscode.commands.executeCommand('polyglot-notebook.connectMssql', notebook, savedConnectionName, savedConnectionId);
+        } else if (savedConnectionName) {
+            // Fallback to connection name (legacy notebooks without connectionId)
+            console.log(`[Polyglot SQL] Connecting using connectionName: ${savedConnectionName}`);
+            await vscode.commands.executeCommand('polyglot-notebook.connectMssql', notebook, savedConnectionName);
+        }
+    }));
+
+    // Register Change Connection command
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.changeSqlConnection', async () => {
+        // Just open the connection picker
+        await vscode.commands.executeCommand('polyglot-notebook.connectMssql');
+    }));
+
+    // Register MSSQL connection command that uses the mssql extension's connection picker
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectMssql', async (notebookArg?: vscode.NotebookDocument, savedConnectionName?: string, savedConnectionId?: string) => {
+        Logger.default.info('MSSQL Connect command triggered');
+
+        try {
+            // Get the notebook - either from the argument or from the active editor
+            let notebook: vscode.NotebookDocument | undefined;
+            if (notebookArg && notebookArg.uri) {
+                notebook = notebookArg;
+            } else {
+                notebook = getCurrentNotebookDocument();
+            }
+
+            if (!notebook) {
+                Logger.default.error('No active notebook found');
+                vscode.window.showErrorMessage('No active notebook found. Please open a Polyglot Notebook first.');
+                return;
+            }
+
+            Logger.default.info(`Using notebook: ${notebook.uri.toString()}`);
+            const mssqlService = getMssqlConnectionService();
+
+            if (!mssqlService.isMssqlExtensionInstalled()) {
+                const installOption = 'Install MSSQL Extension';
+                const result = await vscode.window.showErrorMessage(
+                    'The MSSQL extension is required for SQL Server connections. Would you like to install it?',
+                    installOption
+                );
+                if (result === installOption) {
+                    await vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-mssql.mssql');
+                }
+                return;
+            }
+
+            // Connect using connectionId or show picker
+            let connectionResult: { name: string; connectionString: string; connectionId: string } | undefined;
+
+            if (savedConnectionId) {
+                // Connect using connectionId (uses connectionSharing API with proper auth)
+                console.log(`[Polyglot SQL] Connecting by connectionId: ${savedConnectionId}`);
+                connectionResult = await mssqlService.connectByConnectionId(savedConnectionId);
+                if (!connectionResult) {
+                    console.log(`[Polyglot SQL] connectionId not found in mssql settings, showing picker`);
+                    vscode.window.showWarningMessage(`Saved connection not found. Please select a connection.`);
+                    connectionResult = await mssqlService.promptForConnection();
+                }
+            } else {
+                // No saved connectionId, show picker
+                connectionResult = await mssqlService.promptForConnection();
+            }
+
+            if (!connectionResult) {
+                return; // User cancelled connection selection
+            }
+
+            const { name: connectionName, connectionString } = connectionResult;
+            const connectionId = connectionResult.connectionId;
+
+            // Use the connection name as the kernel name (sanitized)
+            const kernelName = connectionName.replace(/[^a-zA-Z0-9_]/g, '_');
+
+            // Check if this kernel is already connected for this notebook
+            const existingConnection = sqlConnectionTracker.getConnection(notebook.uri.toString());
+            if (existingConnection && existingConnection.kernelName === kernelName) {
+                vscode.window.showInformationMessage(`Already connected to "${connectionName}".`);
+                return;
+            }
+
+            // Get the client and execute the connection command
+            const client = await clientMapper.getOrAddClient(notebook.uri);
+
+            // Show progress while setting up the connection
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'Setting up SQL Server connection',
+                    cancellable: false
+                },
+                async (progress: vscode.Progress<{ message?: string }>) => {
+                    try {
+                        // First, load the SQL Server NuGet package from local source
+                        progress.report({ message: 'Loading SQL Server extension:' });
+                        const addSourceCode = `#i "nuget:c:\\Projects\\interactive\\src\\Microsoft.DotNet.Interactive.SqlServer\\nupkg"`;
+                        console.log(`[Polyglot SQL] Executing: ${addSourceCode}`);
+                        await new Promise<void>((resolve, reject) => {
+                            client.execute(
+                                addSourceCode,
+                                { kernelName: "csharp" },
+                                _output => { },
+                                _diagnostics => { },
+                            ).then(() => resolve()).catch(reject);
+                        });
+
+                        const nugetCode = `#r "nuget: Microsoft.DotNet.Interactive.SqlServer, 1.0.0-dev.26054.8"`;
+                        console.log(`[Polyglot SQL] Executing: ${nugetCode}`);
+                        await new Promise<void>((resolve, reject) => {
+                            client.execute(
+                                nugetCode,
+                                { kernelName: "csharp" },
+                                _output => { },
+                                _diagnostics => { },
+                            ).then(() => resolve()).catch(reject);
+                        });
+                        console.log(`[Polyglot SQL] NuGet package loaded`);
+
+                        // The extension is automatically loaded when the NuGet package is referenced
+
+                        // Now connect using the connection string
+                        progress.report({ message: 'Connecting to database...' });
+
+                        // Fix the User ID part to properly handle spaces and special characters
+                        const fixedConnectionString = connectionString.replace(
+                            /User ID="([^"]*)"/,
+                            (match, userId) => {
+                                // Single quote the User ID to handle spaces
+                                return `User ID='${userId.replace(/'/g, "''")}'`;
+                            }
+                        );
+
+                        const connectCode = `#!connect mssql --kernel-name ${kernelName} "${fixedConnectionString}"`;
+
+                        await new Promise<void>((resolve, reject) => {
+                            client.execute(
+                                connectCode,
+                                { kernelName: "csharp" },
+                                _output => { },
+                                _diagnostics => { },
+                            ).then(() => resolve()).catch(reject);
+                        });
+
+                        // Store the connection for this notebook (in memory)
+                        sqlConnectionTracker.setConnection(notebook.uri.toString(), connectionName, kernelName);
+                        updateSqlConnectionStatusBar();
+
+                        // Cache the connection string for session reuse (avoids re-auth)
+                        mssqlService.cacheConnectionString(connectionName, connectionString);
+
+                        // Save the connection to notebook metadata for persistence (include connectionId for reconnection)
+                        console.log(`[Polyglot SQL] Saving connection metadata: connectionId=${connectionId}, connectionName=${connectionName}`);
+                        const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
+                            notebook.metadata,
+                            { connectionId, connectionName, connectionProfileName: connectionName }
+                        );
+                        await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
+
+                        vscode.window.showInformationMessage(
+                            `SQL Server connected! SQL cells will run against "${connectionName}".`
+                        );
+                    } catch (error: any) {
+                        const errorMessage = error?.message || error?.toString() || JSON.stringify(error);
+                        console.error('[Polyglot] Error in withProgress:', error);
+                        vscode.window.showErrorMessage(`Failed to create SQL connection: ${errorMessage}`);
+                    }
+                }
+            );
+        } catch (error: any) {
+            const errorMessage = error?.message || error?.toString() || JSON.stringify(error);
+            console.error('[Polyglot] Error in connectMssql command:', error);
+            vscode.window.showErrorMessage(`Error connecting to SQL Server: ${errorMessage}`);
+        }
+    }));
 }
 
 export function registerFileCommands(context: vscode.ExtensionContext, parserServer: NotebookParserServer, clientMapper: ClientMapper) {
@@ -292,6 +542,18 @@ export function registerFileCommands(context: vscode.ExtensionContext, parserSer
         return undefined;
     }
 
+    // Shared mapping of display names to kernel names
+    const languagesAndKernelNames: { [key: string]: string } = {
+        'C#': 'csharp',
+        'F#': 'fsharp',
+        'HTML': 'html',
+        'JavaScript': 'javascript',
+        'Markdown': 'markdown',
+        'Mermaid': 'mermaid',
+        'PowerShell': 'pwsh',
+        'SQL': 'sql'
+    };
+
     async function getNewNotebookLanguage(preferDefault: boolean): Promise<string | undefined> {
         const polyglotConfig = vscode.workspace.getConfiguration(constants.PolyglotConfigurationSectionName);
         if (preferDefault) {
@@ -303,16 +565,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, parserSer
         }
 
         // either wanted a fresh value, or no default was set; directly ask the user
-        const languagesAndKernelNames: { [key: string]: string } = {
-            'C#': 'csharp',
-            'F#': 'fsharp',
-            'HTML': 'html',
-            'JavaScript': 'javascript',
-            'Markdown': 'markdown',
-            'Mermaid': 'mermaid',
-            'PowerShell': 'pwsh'
-        };
-
         const newLanguageOptions: string[] = [];
         for (const languageName in languagesAndKernelNames) {
             newLanguageOptions.push(languageName);
@@ -379,6 +631,67 @@ export function registerFileCommands(context: vscode.ExtensionContext, parserSer
 
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.setNewNotebookDefaults', async () => {
         await vscode.commands.executeCommand('workbench.action.openGlobalSettings', { query: 'polyglot-notebook.defaultNotebook' });
+    }));
+
+    // Command to change the default language of the current notebook
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.changeNotebookDefaultLanguage', async () => {
+        const notebook = getCurrentNotebookDocument();
+        if (!notebook) {
+            vscode.window.showWarningMessage('No Polyglot Notebook is currently open.');
+            return;
+        }
+
+        const currentMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(notebook);
+        const currentKernel = currentMetadata.kernelInfo.defaultKernelName;
+        const currentLanguage = Object.entries(languagesAndKernelNames).find(([_, k]) => k === currentKernel)?.[0] || currentKernel;
+
+        const languageOptions = Object.keys(languagesAndKernelNames).map(lang => ({
+            label: lang,
+            description: languagesAndKernelNames[lang] === currentKernel ? '(current)' : undefined
+        }));
+
+        const selected = await vscode.window.showQuickPick(languageOptions, {
+            title: 'Set Default Language for This Notebook',
+            placeHolder: `Current: ${currentLanguage}`
+        });
+
+        if (!selected) {
+            return; // User cancelled
+        }
+
+        const newKernelName = languagesAndKernelNames[selected.label];
+        if (newKernelName === currentKernel) {
+            return; // No change
+        }
+
+        // Update the notebook metadata
+        const isIpynb = metadataUtilities.isIpynbNotebook(notebook);
+        const newMetadata: metadataUtilities.NotebookDocumentMetadata = {
+            kernelInfo: {
+                defaultKernelName: newKernelName,
+                items: currentMetadata.kernelInfo.items
+            }
+        };
+
+        // Ensure the new kernel is in the items list
+        if (!newMetadata.kernelInfo.items.find(item => item.name === newKernelName)) {
+            newMetadata.kernelInfo.items.push({
+                name: newKernelName,
+                aliases: [],
+                languageName: newKernelName
+            });
+        }
+
+        const existingRawMetadata = notebook.metadata;
+        const updatedRawMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(newMetadata, existingRawMetadata, isIpynb);
+        const finalMetadata = metadataUtilities.mergeRawMetadata(existingRawMetadata, updatedRawMetadata);
+
+        await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, finalMetadata);
+
+        // Update the SQL notebook context for toolbar visibility
+        updateSqlConnectionStatusBar();
+
+        vscode.window.showInformationMessage(`Notebook default language changed to ${selected.label}.`);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.newNotebook', async () => {

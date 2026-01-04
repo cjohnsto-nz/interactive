@@ -219,7 +219,7 @@
         },
         "dotnet-interactive.requiredInteractiveToolVersion": {
           "type": "string",
-          "default": "1.0.516801",
+          "default": "1.0.632301",
           "description": "%description.requiredInteractiveToolVersion%"
         }
       }
@@ -275,6 +275,10 @@
         "title": "%command.setNewNotebookDefaults%"
       },
       {
+        "command": "polyglot-notebook.changeNotebookDefaultLanguage",
+        "title": "%command.changeNotebookDefaultLanguage%"
+      },
+      {
         "command": "polyglot-notebook.restartCurrentNotebookKernel",
         "title": "%command.restartCurrentNotebookKernel%"
       },
@@ -302,6 +306,21 @@
         "command": "polyglot-notebook.notebookEditor.openValueViewer",
         "title": "%command.openValueViewer%",
         "icon": "$(variable-group)"
+      },
+      {
+        "command": "polyglot-notebook.connectMssql",
+        "title": "%command.connectMssql%",
+        "icon": "$(database)"
+      },
+      {
+        "command": "polyglot-notebook.connectSavedSql",
+        "title": "%command.connectSavedSql%",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "polyglot-notebook.changeSqlConnection",
+        "title": "%command.changeSqlConnection%",
+        "icon": "$(database)"
       }
     ],
     "keybindings": [
@@ -336,6 +355,21 @@
           "command": "polyglot-notebook.notebookEditor.openValueViewer",
           "group": "navigation@1",
           "when": "notebookKernel =~ /polyglot-notebook/ && isWorkspaceTrusted"
+        },
+        {
+          "command": "polyglot-notebook.connectSavedSql",
+          "group": "navigation@2",
+          "when": "notebookKernel =~ /polyglot-notebook/ && isWorkspaceTrusted && polyglotNotebook.isSqlNotebook && polyglotNotebook.hasSavedSqlConnection && !polyglotNotebook.isSqlConnected"
+        },
+        {
+          "command": "polyglot-notebook.changeSqlConnection",
+          "group": "navigation@3",
+          "when": "notebookKernel =~ /polyglot-notebook/ && isWorkspaceTrusted && polyglotNotebook.isSqlNotebook && polyglotNotebook.isSqlConnected"
+        },
+        {
+          "command": "polyglot-notebook.connectMssql",
+          "group": "navigation@4",
+          "when": "notebookKernel =~ /polyglot-notebook/ && isWorkspaceTrusted && polyglotNotebook.isSqlNotebook && !polyglotNotebook.hasSavedSqlConnection && !polyglotNotebook.isSqlConnected"
         }
       ]
     },
