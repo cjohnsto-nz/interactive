@@ -140,7 +140,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
         const workspaceFolderUris = vscode.workspace.workspaceFolders?.map(folder => folder.uri) || [];
         const workingDirectory = getWorkingDirectoryForNotebook(notebookUri, workspaceFolderUris, fallbackWorkingDirectory);
-        const environmentVariables = { ...polyglotConfig.get<{ [key: string]: string }>('kernelEnvironmentVariables'), 'DOTNET_CLI_CULTURE': getCurrentCulture(), 'DOTNET_CLI_UI_LANGUAGE': getCurrentCulture() };
+        // Configure Azure Identity to use shared token cache for SSO with VS Code
+        // This allows .NET Interactive to reuse tokens from VS Code/Azure CLI
+        const environmentVariables = { 
+            ...polyglotConfig.get<{ [key: string]: string }>('kernelEnvironmentVariables'), 
+            'DOTNET_CLI_CULTURE': getCurrentCulture(), 
+            'DOTNET_CLI_UI_LANGUAGE': getCurrentCulture(),
+            // Enable shared token cache for Azure AD authentication
+            'AZURE_TOKEN_CACHE_PERSISTENCE_ENABLED': 'true',
+            'AZURE_IDENTITY_DISABLE_MULTITENANTAUTH': 'true',
+        };
 
         const processStart = processArguments(argsTemplate, workingDirectory, DotNetPathManager.getDotNetPath(), launchOptions!.workingDirectory, environmentVariables);
 

@@ -8,7 +8,7 @@ import * as vscodeLike from './interfaces/vscode-like';
 import * as diagnostics from './diagnostics';
 import * as vscodeUtilities from './vscodeUtilities';
 import { reshapeOutputValueForVsCode } from './interfaces/utilities';
-import { selectDotNetInteractiveKernelForJupyter } from './commands';
+import { selectDotNetInteractiveKernelForJupyter, updateSqlConnectionStatusBar } from './commands';
 import { ErrorOutputCreator, InteractiveClient } from './interactiveClient';
 import { LogEntry, Logger } from './polyglot-notebooks/logger';
 import { isKernelCommandEnvelopeModel, isKernelEventEnvelope, isKernelEventEnvelopeModel, KernelCommandOrEventEnvelope } from './polyglot-notebooks/connection';
@@ -16,6 +16,8 @@ import * as rxjs from 'rxjs';
 import * as metadataUtilities from './metadataUtilities';
 import * as constants from './constants';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
+import * as sqlConnectionTracker from './sqlConnectionTracker';
+import { getMssqlConnectionService } from './mssqlConnectionService';
 import * as semanticTokens from './documentSemanticTokenProvider';
 import { ServiceCollection } from './serviceCollection';
 
@@ -118,6 +120,153 @@ export class DotNetNotebookKernel {
             }
 
             await updateNotebookMetadata(notebook, this.config.clientMapper);
+
+            // Check for saved SQL connection and update status bar (don't auto-connect)
+            await this.checkSavedSqlConnection(notebook);
+        }
+    }
+
+    /**
+     * Check for saved SQL connection in notebook metadata and update the status bar.
+     * Does NOT auto-connect - user must click Connect button.
+     */
+    private async checkSavedSqlConnection(notebook: vscode.NotebookDocument): Promise<void> {
+        const sqlConnectionMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebook);
+        
+        if (!sqlConnectionMetadata.connectionId) {
+            return; // No saved connection
+        }
+
+        // Look up connection details from mssql settings to get display name
+        const config = vscode.workspace.getConfiguration('mssql');
+        const connections = config.get<any[]>('connections') || [];
+        const conn = connections.find((c: any) => c.id === sqlConnectionMetadata.connectionId);
+        
+        if (!conn) {
+            console.log(`[Polyglot SQL] Saved connection ${sqlConnectionMetadata.connectionId} not found in mssql settings`);
+            return;
+        }
+
+        // Derive display name: profileName or "database (server)"
+        const displayName = conn.profileName || `${conn.database} (${conn.server})`;
+        console.log(`[Polyglot SQL] Found saved connection: ${displayName} (id: ${sqlConnectionMetadata.connectionId})`);
+        
+        sqlConnectionTracker.setSavedConnection(
+            notebook.uri.toString(), 
+            displayName,
+            sqlConnectionMetadata.connectionId
+        );
+        updateSqlConnectionStatusBar();
+    }
+
+    /**
+     * Actually connect to SQL Server using the saved or selected connection.
+     * Called when user clicks the Connect button.
+     */
+    private async connectSqlConnection(notebook: vscode.NotebookDocument, client: InteractiveClient, connectionName?: string, connectionId?: string): Promise<void> {
+        const mssqlService = getMssqlConnectionService();
+        if (!mssqlService.isMssqlExtensionInstalled()) {
+            vscode.window.showErrorMessage('MSSQL extension is required. Please install it from the VS Code marketplace.');
+            return;
+        }
+
+        let finalConnectionName: string;
+        let connectionString: string;
+        let finalConnectionId: string | undefined;
+        
+        // Check if we have a cached connection string from this session
+        if (connectionName) {
+            const cachedConnectionString = mssqlService.getCachedConnectionString(connectionName);
+            if (cachedConnectionString) {
+                console.log(`[Polyglot SQL] Using cached connection string for "${connectionName}"`);
+                finalConnectionName = connectionName;
+                connectionString = cachedConnectionString;
+                finalConnectionId = connectionId;
+            } else if (connectionId) {
+                // Use connectionId with connectionSharing API (preferred)
+                console.log(`[Polyglot SQL] Connecting by connectionId: ${connectionId}`);
+                const result = await mssqlService.connectByConnectionId(connectionId);
+                if (result) {
+                    finalConnectionName = result.name;
+                    connectionString = result.connectionString;
+                    finalConnectionId = result.connectionId;
+                    mssqlService.cacheConnectionString(finalConnectionName, connectionString);
+                } else {
+                    vscode.window.showWarningMessage(`Could not connect. Please select a connection.`);
+                    const promptResult = await mssqlService.promptForConnection();
+                    if (!promptResult) {
+                        return; // User cancelled
+                    }
+                    finalConnectionName = promptResult.name;
+                    connectionString = promptResult.connectionString;
+                    finalConnectionId = promptResult.connectionId;
+                    mssqlService.cacheConnectionString(finalConnectionName, connectionString);
+                }
+            } else {
+                // No connectionId, prompt for connection
+                console.log(`[Polyglot SQL] No connectionId, prompting for connection`);
+                const promptResult = await mssqlService.promptForConnection();
+                if (!promptResult) {
+                    return; // User cancelled
+                }
+                finalConnectionName = promptResult.name;
+                connectionString = promptResult.connectionString;
+                finalConnectionId = promptResult.connectionId;
+                mssqlService.cacheConnectionString(finalConnectionName, connectionString);
+            }
+        } else {
+            // No connection name provided, prompt for one
+            const promptResult = await mssqlService.promptForConnection();
+            if (!promptResult) {
+                return; // User cancelled
+            }
+            finalConnectionName = promptResult.name;
+            connectionString = promptResult.connectionString;
+            finalConnectionId = promptResult.connectionId;
+            mssqlService.cacheConnectionString(finalConnectionName, connectionString);
+        }
+
+        try {
+            // Sanitize kernel name
+            const kernelName = finalConnectionName.replace(/[^a-zA-Z0-9_]/g, '_');
+
+            // Check if this kernel is already connected (avoid duplicate kernel error)
+            const existingConnection = sqlConnectionTracker.getConnection(notebook.uri.toString());
+            if (existingConnection && existingConnection.kernelName === kernelName) {
+                Logger.default.info(`Kernel "${kernelName}" already connected for this notebook`);
+                return;
+            }
+
+            // Load SQL Server extension and connect
+            // Add local NuGet source first, then reference the package
+            const addSourceCode = `#i "nuget:c:\\Projects\\interactive\\src\\Microsoft.DotNet.Interactive.SqlServer\\nupkg"`;
+            console.log(`[Polyglot SQL] Executing: ${addSourceCode}`);
+            await client.execute(addSourceCode, { kernelName: "csharp" }, () => {}, () => {});
+            const nugetCode = `#r "nuget: Microsoft.DotNet.Interactive.SqlServer, 1.0.0-dev.26054.4"`;
+            console.log(`[Polyglot SQL] Executing: ${nugetCode}`);
+            await client.execute(nugetCode, { kernelName: "csharp" }, () => {}, () => {});
+            console.log(`[Polyglot SQL] NuGet package loaded`);
+
+            // Fix User ID quoting for connection strings with spaces
+            const fixedConnectionString = connectionString.replace(
+                /User ID="([^"]*)"/,
+                (_match: string, userId: string) => `User ID='${userId.replace(/'/g, "''")}'`
+            );
+
+            const connectCode = `#!connect mssql --kernel-name ${kernelName} "${fixedConnectionString}"`;
+            await client.execute(connectCode, { kernelName: "csharp" }, () => {}, () => {});
+
+            // Store in memory tracker
+            sqlConnectionTracker.setConnection(notebook.uri.toString(), finalConnectionName, kernelName);
+            
+            // Update status bar to show the connection
+            updateSqlConnectionStatusBar();
+
+            Logger.default.info(`Connected SQL notebook to "${finalConnectionName}"`);
+            vscode.window.showInformationMessage(`SQL connection established: ${finalConnectionName}`);
+        } catch (error: any) {
+            Logger.default.error(`Failed to connect SQL: ${error?.message || error}`);
+            vscode.window.showErrorMessage(`Failed to connect: ${error?.message || error}`);
         }
     }
 
@@ -300,6 +449,8 @@ function isNotebookOpenComplete(notebook: vscode.NotebookDocument) {
 
 function stopTrackingNotebook(notebook: vscode.NotebookDocument) {
     openedNotebooks.delete(notebook.uri.fsPath);
+    // Clear SQL connection state so reopening the notebook will reconnect properly
+    sqlConnectionTracker.clearConnection(notebook.uri.toString());
 }
 
 async function ensureCellKernelMetadata(cell: vscode.NotebookCell, options: { preferPreviousCellMetadata: boolean }): Promise<void> {

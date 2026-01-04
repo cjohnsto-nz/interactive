@@ -10,6 +10,7 @@ import * as metadataUtilities from './metadataUtilities';
 import * as vscodeLike from './interfaces/vscode-like';
 import * as constants from './constants';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
+import * as sqlConnectionTracker from './sqlConnectionTracker';
 
 export function isInsidersBuild(): boolean {
     return vscode.version.indexOf('-insider') >= 0;
@@ -83,7 +84,17 @@ export function toNotebookDocument(document: vscode.NotebookDocument): Interacti
 
 export function getCellKernelName(cell: vscode.NotebookCell): string {
     const cellMetadata = metadataUtilities.getNotebookCellMetadataFromNotebookCellElement(cell);
-    return cellMetadata.kernelName ?? 'csharp';
+    const kernelName = cellMetadata.kernelName ?? 'csharp';
+    
+    // If the cell is using the 'sql' kernel and there's a connected SQL kernel, use that instead
+    if (kernelName === 'sql') {
+        const connectedSqlKernel = sqlConnectionTracker.getConnectedSqlKernelName(cell.notebook.uri.toString());
+        if (connectedSqlKernel) {
+            return connectedSqlKernel;
+        }
+    }
+    
+    return kernelName;
 }
 
 export async function setCellKernelName(cell: vscode.NotebookCell, kernelName: string): Promise<void> {

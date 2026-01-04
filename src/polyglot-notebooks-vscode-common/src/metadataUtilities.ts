@@ -34,8 +34,125 @@ export function isDotNetNotebook(notebook: vscodeLike.NotebookDocument): boolean
         return true;
     }
 
+    // Also recognize SQL notebooks (ADS-style)
+    if (kernelspecMetadata.name.toLowerCase() === 'sql' || kernelspecMetadata.language?.toLowerCase() === 'sql') {
+        return true;
+    }
+
     // doesn't look like us
     return false;
+}
+
+export function isSqlNotebook(notebook: vscodeLike.NotebookDocument): boolean {
+    // Check for legacy ADS-style SQL notebooks (kernelspec name/language is 'sql')
+    // Also check for .net-sql kernelspec (new Polyglot SQL notebooks)
+    const kernelspecMetadata = getKernelspecMetadataFromIpynbNotebookDocument(notebook);
+    const ksName = kernelspecMetadata.name.toLowerCase();
+    const ksLang = kernelspecMetadata.language?.toLowerCase();
+    if (ksName === 'sql' || ksName === '.net-sql' || ksLang === 'sql') {
+        return true;
+    }
+    
+    // Check for Polyglot notebooks with SQL as default kernel
+    const fileMetadata = notebook.metadata?.metadata || {};
+    const directMetadata = notebook.metadata || {};
+    
+    // Check polyglot_notebook.kernelInfo.defaultKernelName in file metadata (ipynb)
+    const polyglotFile = fileMetadata.polyglot_notebook;
+    if (polyglotFile?.kernelInfo?.defaultKernelName?.toLowerCase() === 'sql') {
+        return true;
+    }
+    
+    // Check polyglot_notebook.kernelInfo.defaultKernelName in direct metadata
+    const polyglotDirect = directMetadata.polyglot_notebook;
+    if (polyglotDirect?.kernelInfo?.defaultKernelName?.toLowerCase() === 'sql') {
+        return true;
+    }
+    
+    return false;
+}
+
+export interface SqlConnectionMetadata {
+    connectionId?: string;
+    connectionName?: string;
+    connectionProfileName?: string;
+}
+
+export function getSqlConnectionMetadataFromNotebookDocument(notebook: vscodeLike.NotebookDocument): SqlConnectionMetadata {
+    // For .ipynb files, VS Code nests the file's metadata under notebook.metadata.metadata
+    // For .dib files, metadata is directly on notebook.metadata
+    const fileMetadata = notebook.metadata?.metadata || {};
+    const directMetadata = notebook.metadata || {};
+    
+    // Check for ADS-style connection metadata (in file metadata)
+    const azdata_connection = fileMetadata.azdata_connection;
+    if (typeof azdata_connection === 'object') {
+        return {
+            connectionId: azdata_connection.connectionId,
+            connectionName: azdata_connection.connectionName,
+            connectionProfileName: azdata_connection.connectionProfileName
+        };
+    }
+    
+    // Check for polyglot_notebook SQL connection in file metadata (ipynb)
+    const polyglot_notebook_file = fileMetadata.polyglot_notebook || {};
+    if (polyglot_notebook_file.sqlConnection) {
+        return {
+            connectionId: polyglot_notebook_file.sqlConnection.connectionId,
+            connectionName: polyglot_notebook_file.sqlConnection.connectionName,
+            connectionProfileName: polyglot_notebook_file.sqlConnection.connectionProfileName
+        };
+    }
+    
+    // Check for polyglot_notebook SQL connection in direct metadata (dib)
+    const polyglot_notebook_direct = directMetadata.polyglot_notebook || {};
+    if (polyglot_notebook_direct.sqlConnection) {
+        return {
+            connectionId: polyglot_notebook_direct.sqlConnection.connectionId,
+            connectionName: polyglot_notebook_direct.sqlConnection.connectionName,
+            connectionProfileName: polyglot_notebook_direct.sqlConnection.connectionProfileName
+        };
+    }
+    
+    return {};
+}
+
+export function createSqlConnectionMetadata(connectionId: string | undefined, connectionName: string, connectionProfileName: string): { [key: string]: any } {
+    return {
+        polyglot_notebook: {
+            sqlConnection: {
+                connectionId,
+                connectionName,
+                connectionProfileName
+            }
+        }
+    };
+}
+
+export function mergeSqlConnectionMetadataIntoNotebookMetadata(
+    existingMetadata: { [key: string]: any },
+    sqlConnectionMetadata: SqlConnectionMetadata
+): { [key: string]: any } {
+    const result = { ...existingMetadata };
+    
+    // For ipynb files, metadata is nested under 'metadata'
+    if (result.metadata) {
+        result.metadata = {
+            ...result.metadata,
+            polyglot_notebook: {
+                ...(result.metadata.polyglot_notebook || {}),
+                sqlConnection: sqlConnectionMetadata
+            }
+        };
+    } else {
+        // For dib files, metadata is at the root
+        result.polyglot_notebook = {
+            ...(result.polyglot_notebook || {}),
+            sqlConnection: sqlConnectionMetadata
+        };
+    }
+    
+    return result;
 }
 
 export function getNotebookCellMetadataFromInteractiveDocumentElement(interactiveDocumentElement: commandsAndEvents.InteractiveDocumentElement): NotebookCellMetadata {
@@ -264,6 +381,12 @@ export function getKernelspecMetadataFromNotebookDocumentMetadata(notebookDocume
                 display_name: '.NET (PowerShell)',
                 language: 'PowerShell',
                 name: '.net-pwsh'
+            };
+        case 'sql':
+            return {
+                display_name: '.NET (SQL)',
+                language: 'sql',
+                name: '.net-sql'
             };
         case 'csharp':
         default:
