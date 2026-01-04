@@ -128,7 +128,7 @@ export class DotNetNotebookKernel {
 
     /**
      * Check for saved SQL connection in notebook metadata and update the status bar.
-     * Does NOT auto-connect - user must click Connect button.
+     * For proxy mode connections, auto-reconnect. For legacy mode, user must click Connect.
      */
     private async checkSavedSqlConnection(notebook: vscode.NotebookDocument): Promise<void> {
         const sqlConnectionMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebook);
@@ -149,13 +149,53 @@ export class DotNetNotebookKernel {
 
         // Derive display name: profileName or "database (server)"
         const displayName = conn.profileName || `${conn.database} (${conn.server})`;
-        console.log(`[Polyglot SQL] Found saved connection: ${displayName} (id: ${sqlConnectionMetadata.connectionId})`);
+        console.log(`[Polyglot SQL] Found saved connection: ${displayName} (id: ${sqlConnectionMetadata.connectionId}, proxyMode: ${sqlConnectionMetadata.proxyMode})`);
         
-        sqlConnectionTracker.setSavedConnection(
-            notebook.uri.toString(), 
-            displayName,
-            sqlConnectionMetadata.connectionId
-        );
+        // For proxy mode, auto-reconnect silently
+        if (sqlConnectionMetadata.proxyMode) {
+            try {
+                const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
+                const connectionUri = await vscode.commands.executeCommand<string>(
+                    'mssql.connectionSharing.connect',
+                    extensionId,
+                    sqlConnectionMetadata.connectionId
+                );
+                
+                if (connectionUri) {
+                    sqlConnectionTracker.setProxyConnection(
+                        notebook.uri.toString(),
+                        displayName,
+                        sqlConnectionMetadata.connectionId,
+                        connectionUri
+                    );
+                    console.log(`[Polyglot SQL] Auto-reconnected proxy connection: ${displayName}`);
+                } else {
+                    console.log(`[Polyglot SQL] Failed to auto-reconnect proxy connection: ${displayName}`);
+                    // Fall back to saved connection state
+                    sqlConnectionTracker.setSavedConnection(
+                        notebook.uri.toString(), 
+                        displayName,
+                        sqlConnectionMetadata.connectionId
+                    );
+                }
+            } catch (error: any) {
+                console.log(`[Polyglot SQL] Error auto-reconnecting proxy: ${error?.message || error}`);
+                // Fall back to saved connection state
+                sqlConnectionTracker.setSavedConnection(
+                    notebook.uri.toString(), 
+                    displayName,
+                    sqlConnectionMetadata.connectionId
+                );
+            }
+        } else {
+            // Legacy mode - just mark as saved, user must click Connect
+            sqlConnectionTracker.setSavedConnection(
+                notebook.uri.toString(), 
+                displayName,
+                sqlConnectionMetadata.connectionId
+            );
+        }
+        
         updateSqlConnectionStatusBar();
     }
 

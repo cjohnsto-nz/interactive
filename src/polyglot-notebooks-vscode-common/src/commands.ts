@@ -54,10 +54,16 @@ export function updateSqlConnectionStatusBar() {
         sqlConnectionStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     }
 
+    // Check for proxy connection
+    const isProxy = sqlConnectionTracker.isProxyConnection(notebook.uri.toString());
+    
     if (connection) {
         // Connected - show connection name
-        sqlConnectionStatusBar.text = `$(database) ${connection.connectionName}`;
-        sqlConnectionStatusBar.tooltip = `SQL Server: ${connection.connectionName}\nKernel: #!sql-${connection.kernelName}`;
+        const proxyLabel = isProxy ? ' (proxy)' : '';
+        sqlConnectionStatusBar.text = `$(database) ${connection.connectionName}${proxyLabel}`;
+        sqlConnectionStatusBar.tooltip = isProxy 
+            ? `SQL Server: ${connection.connectionName}\nMode: Proxy (secure - via MSSQL extension)`
+            : `SQL Server: ${connection.connectionName}\nKernel: #!sql-${connection.kernelName}`;
         sqlConnectionStatusBar.backgroundColor = undefined;
         sqlConnectionStatusBar.command = 'polyglot-notebook.changeSqlConnection';
         sqlConnectionStatusBar.show();
@@ -271,7 +277,7 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             .forEach(async document => await vscode.commands.executeCommand('polyglot-notebook.stopCurrentNotebookKernel', document));
     }));
 
-    // Register Connect (to saved connection) command
+    // Register Connect (to saved connection) command - uses proxy mode
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSavedSql', async () => {
         const notebook = getCurrentNotebookDocument();
         if (!notebook) {
@@ -280,10 +286,39 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
 
         const savedConnectionId = sqlConnectionTracker.getSavedConnectionId(notebook.uri.toString());
         const savedConnectionName = sqlConnectionTracker.getSavedConnection(notebook.uri.toString());
+        
+        // Check if this was a proxy mode connection from metadata
+        const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebook);
 
-        if (savedConnectionId) {
-            // Connect using connectionId (preferred - uses connectionSharing API)
-            console.log(`[Polyglot SQL] Connecting using connectionId: ${savedConnectionId}, name: ${savedConnectionName}`);
+        if (savedConnectionId && sqlMetadata.proxyMode) {
+            // Reconnect using proxy mode
+            console.log(`[Polyglot SQL] Reconnecting proxy connection: ${savedConnectionId}, name: ${savedConnectionName}`);
+            try {
+                const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
+                const connectionUri = await vscode.commands.executeCommand<string>(
+                    'mssql.connectionSharing.connect',
+                    extensionId,
+                    savedConnectionId
+                );
+                
+                if (connectionUri) {
+                    sqlConnectionTracker.setProxyConnection(
+                        notebook.uri.toString(),
+                        savedConnectionName || 'SQL Connection',
+                        savedConnectionId,
+                        connectionUri
+                    );
+                    updateSqlConnectionStatusBar();
+                    vscode.window.showInformationMessage(`SQL Proxy connected: ${savedConnectionName}`);
+                } else {
+                    vscode.window.showErrorMessage('Failed to connect to database');
+                }
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Connection failed: ${error?.message || error}`);
+            }
+        } else if (savedConnectionId) {
+            // Legacy mode - use old connection flow
+            console.log(`[Polyglot SQL] Connecting using legacy mode: ${savedConnectionId}, name: ${savedConnectionName}`);
             await vscode.commands.executeCommand('polyglot-notebook.connectMssql', notebook, savedConnectionName, savedConnectionId);
         } else if (savedConnectionName) {
             // Fallback to connection name (legacy notebooks without connectionId)
@@ -292,172 +327,61 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
         }
     }));
 
-    // Register Change Connection command
+    // Register Change Connection command - uses proxy mode picker
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.changeSqlConnection', async () => {
-        // Just open the connection picker
-        await vscode.commands.executeCommand('polyglot-notebook.connectMssql');
+        // Use proxy mode connection picker
+        await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
     }));
 
-    // Register MSSQL connection command that uses the mssql extension's connection picker
-    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectMssql', async (notebookArg?: vscode.NotebookDocument, savedConnectionName?: string, savedConnectionId?: string) => {
-        Logger.default.info('MSSQL Connect command triggered');
+    // Register MSSQL connection command - now uses proxy mode by default
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectMssql', async (_notebookArg?: vscode.NotebookDocument, _savedConnectionName?: string, savedConnectionId?: string) => {
+        Logger.default.info('MSSQL Connect command triggered - using proxy mode');
 
-        try {
-            // Get the notebook - either from the argument or from the active editor
-            let notebook: vscode.NotebookDocument | undefined;
-            if (notebookArg && notebookArg.uri) {
-                notebook = notebookArg;
-            } else {
-                notebook = getCurrentNotebookDocument();
-            }
-
-            if (!notebook) {
-                Logger.default.error('No active notebook found');
-                vscode.window.showErrorMessage('No active notebook found. Please open a Polyglot Notebook first.');
-                return;
-            }
-
-            Logger.default.info(`Using notebook: ${notebook.uri.toString()}`);
-            const mssqlService = getMssqlConnectionService();
-
-            if (!mssqlService.isMssqlExtensionInstalled()) {
-                const installOption = 'Install MSSQL Extension';
-                const result = await vscode.window.showErrorMessage(
-                    'The MSSQL extension is required for SQL Server connections. Would you like to install it?',
-                    installOption
-                );
-                if (result === installOption) {
-                    await vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-mssql.mssql');
-                }
-                return;
-            }
-
-            // Connect using connectionId or show picker
-            let connectionResult: { name: string; connectionString: string; connectionId: string } | undefined;
-
-            if (savedConnectionId) {
-                // Connect using connectionId (uses connectionSharing API with proper auth)
-                console.log(`[Polyglot SQL] Connecting by connectionId: ${savedConnectionId}`);
-                connectionResult = await mssqlService.connectByConnectionId(savedConnectionId);
-                if (!connectionResult) {
-                    console.log(`[Polyglot SQL] connectionId not found in mssql settings, showing picker`);
-                    vscode.window.showWarningMessage(`Saved connection not found. Please select a connection.`);
-                    connectionResult = await mssqlService.promptForConnection();
-                }
-            } else {
-                // No saved connectionId, show picker
-                connectionResult = await mssqlService.promptForConnection();
-            }
-
-            if (!connectionResult) {
-                return; // User cancelled connection selection
-            }
-
-            const { name: connectionName, connectionString } = connectionResult;
-            const connectionId = connectionResult.connectionId;
-
-            // Use the connection name as the kernel name (sanitized)
-            const kernelName = connectionName.replace(/[^a-zA-Z0-9_]/g, '_');
-
-            // Check if this kernel is already connected for this notebook
-            const existingConnection = sqlConnectionTracker.getConnection(notebook.uri.toString());
-            if (existingConnection && existingConnection.kernelName === kernelName) {
-                vscode.window.showInformationMessage(`Already connected to "${connectionName}".`);
-                return;
-            }
-
-            // Get the client and execute the connection command
-            const client = await clientMapper.getOrAddClient(notebook.uri);
-
-            // Show progress while setting up the connection
-            await vscode.window.withProgress(
-                {
-                    location: vscode.ProgressLocation.Notification,
-                    title: 'Setting up SQL Server connection',
-                    cancellable: false
-                },
-                async (progress: vscode.Progress<{ message?: string }>) => {
-                    try {
-                        // First, load the SQL Server NuGet package from local source
-                        progress.report({ message: 'Loading SQL Server extension:' });
-                        const addSourceCode = `#i "nuget:c:\\Projects\\interactive\\src\\Microsoft.DotNet.Interactive.SqlServer\\nupkg"`;
-                        console.log(`[Polyglot SQL] Executing: ${addSourceCode}`);
-                        await new Promise<void>((resolve, reject) => {
-                            client.execute(
-                                addSourceCode,
-                                { kernelName: "csharp" },
-                                _output => { },
-                                _diagnostics => { },
-                            ).then(() => resolve()).catch(reject);
-                        });
-
-                        const nugetCode = `#r "nuget: Microsoft.DotNet.Interactive.SqlServer, 1.0.0-dev.26054.8"`;
-                        console.log(`[Polyglot SQL] Executing: ${nugetCode}`);
-                        await new Promise<void>((resolve, reject) => {
-                            client.execute(
-                                nugetCode,
-                                { kernelName: "csharp" },
-                                _output => { },
-                                _diagnostics => { },
-                            ).then(() => resolve()).catch(reject);
-                        });
-                        console.log(`[Polyglot SQL] NuGet package loaded`);
-
-                        // The extension is automatically loaded when the NuGet package is referenced
-
-                        // Now connect using the connection string
-                        progress.report({ message: 'Connecting to database...' });
-
-                        // Fix the User ID part to properly handle spaces and special characters
-                        const fixedConnectionString = connectionString.replace(
-                            /User ID="([^"]*)"/,
-                            (match, userId) => {
-                                // Single quote the User ID to handle spaces
-                                return `User ID='${userId.replace(/'/g, "''")}'`;
-                            }
+        // If we have a savedConnectionId, try to connect directly via proxy
+        if (savedConnectionId) {
+            const notebook = getCurrentNotebookDocument();
+            if (notebook) {
+                try {
+                    const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
+                    const connectionUri = await vscode.commands.executeCommand<string>(
+                        'mssql.connectionSharing.connect',
+                        extensionId,
+                        savedConnectionId
+                    );
+                    
+                    if (connectionUri) {
+                        // Look up display name
+                        const config = vscode.workspace.getConfiguration('mssql');
+                        const connections = config.get<any[]>('connections') || [];
+                        const conn = connections.find((c: any) => c.id === savedConnectionId);
+                        const displayName = conn?.profileName || `${conn?.database} (${conn?.server})` || 'SQL Connection';
+                        
+                        sqlConnectionTracker.setProxyConnection(
+                            notebook.uri.toString(),
+                            displayName,
+                            savedConnectionId,
+                            connectionUri
                         );
-
-                        const connectCode = `#!connect mssql --kernel-name ${kernelName} "${fixedConnectionString}"`;
-
-                        await new Promise<void>((resolve, reject) => {
-                            client.execute(
-                                connectCode,
-                                { kernelName: "csharp" },
-                                _output => { },
-                                _diagnostics => { },
-                            ).then(() => resolve()).catch(reject);
-                        });
-
-                        // Store the connection for this notebook (in memory)
-                        sqlConnectionTracker.setConnection(notebook.uri.toString(), connectionName, kernelName);
-                        updateSqlConnectionStatusBar();
-
-                        // Cache the connection string for session reuse (avoids re-auth)
-                        mssqlService.cacheConnectionString(connectionName, connectionString);
-
-                        // Save the connection to notebook metadata for persistence (include connectionId for reconnection)
-                        console.log(`[Polyglot SQL] Saving connection metadata: connectionId=${connectionId}, connectionName=${connectionName}`);
+                        
+                        // Save to metadata
                         const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
                             notebook.metadata,
-                            { connectionId, connectionName, connectionProfileName: connectionName }
+                            { connectionId: savedConnectionId, connectionName: displayName, connectionProfileName: displayName, proxyMode: true }
                         );
                         await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
-
-                        vscode.window.showInformationMessage(
-                            `SQL Server connected! SQL cells will run against "${connectionName}".`
-                        );
-                    } catch (error: any) {
-                        const errorMessage = error?.message || error?.toString() || JSON.stringify(error);
-                        console.error('[Polyglot] Error in withProgress:', error);
-                        vscode.window.showErrorMessage(`Failed to create SQL connection: ${errorMessage}`);
+                        
+                        updateSqlConnectionStatusBar();
+                        vscode.window.showInformationMessage(`SQL Proxy connected: ${displayName}`);
+                        return;
                     }
+                } catch (error: any) {
+                    console.log(`[Polyglot SQL] Direct proxy connect failed, falling back to picker: ${error?.message}`);
                 }
-            );
-        } catch (error: any) {
-            const errorMessage = error?.message || error?.toString() || JSON.stringify(error);
-            console.error('[Polyglot] Error in connectMssql command:', error);
-            vscode.window.showErrorMessage(`Error connecting to SQL Server: ${errorMessage}`);
+            }
         }
+        
+        // Fall back to proxy mode picker
+        await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
     }));
 
     // Proof of concept: Execute SQL via MSSQL proxy (no credentials exposed)
@@ -615,13 +539,25 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                         throw new Error('Failed to connect to database');
                     }
                     
-                    // Store as proxy connection
+                    // Store as proxy connection in memory
                     sqlConnectionTracker.setProxyConnection(
                         notebook.uri.toString(),
                         selected.kernel.name,
                         selected.kernel.id,
                         connectionUri
                     );
+                    
+                    // Save to notebook metadata for persistence
+                    const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
+                        notebook.metadata,
+                        { 
+                            connectionId: selected.kernel.id, 
+                            connectionName: selected.kernel.name, 
+                            connectionProfileName: selected.kernel.name,
+                            proxyMode: true
+                        }
+                    );
+                    await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
                     
                     updateSqlConnectionStatusBar();
                     

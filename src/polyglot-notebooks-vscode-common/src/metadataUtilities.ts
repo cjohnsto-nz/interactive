@@ -76,6 +76,8 @@ export interface SqlConnectionMetadata {
     connectionId?: string;
     connectionName?: string;
     connectionProfileName?: string;
+    /** If true, use MSSQL proxy mode (no credentials exposed to Polyglot) */
+    proxyMode?: boolean;
 }
 
 export function getSqlConnectionMetadataFromNotebookDocument(notebook: vscodeLike.NotebookDocument): SqlConnectionMetadata {
@@ -100,7 +102,8 @@ export function getSqlConnectionMetadataFromNotebookDocument(notebook: vscodeLik
         return {
             connectionId: polyglot_notebook_file.sqlConnection.connectionId,
             connectionName: polyglot_notebook_file.sqlConnection.connectionName,
-            connectionProfileName: polyglot_notebook_file.sqlConnection.connectionProfileName
+            connectionProfileName: polyglot_notebook_file.sqlConnection.connectionProfileName,
+            proxyMode: polyglot_notebook_file.sqlConnection.proxyMode
         };
     }
     
@@ -110,7 +113,8 @@ export function getSqlConnectionMetadataFromNotebookDocument(notebook: vscodeLik
         return {
             connectionId: polyglot_notebook_direct.sqlConnection.connectionId,
             connectionName: polyglot_notebook_direct.sqlConnection.connectionName,
-            connectionProfileName: polyglot_notebook_direct.sqlConnection.connectionProfileName
+            connectionProfileName: polyglot_notebook_direct.sqlConnection.connectionProfileName,
+            proxyMode: polyglot_notebook_direct.sqlConnection.proxyMode
         };
     }
     
