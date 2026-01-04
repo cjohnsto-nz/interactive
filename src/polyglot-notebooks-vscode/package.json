@@ -321,6 +321,11 @@
         "command": "polyglot-notebook.changeSqlConnection",
         "title": "%command.changeSqlConnection%",
         "icon": "$(database)"
+      },
+      {
+        "command": "polyglot-notebook.executeSqlViaProxy",
+        "title": "Execute SQL via MSSQL Proxy (POC)",
+        "icon": "$(zap)"
       }
     ],
     "keybindings": [

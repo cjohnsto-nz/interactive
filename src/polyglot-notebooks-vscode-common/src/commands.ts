@@ -459,6 +459,104 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             vscode.window.showErrorMessage(`Error connecting to SQL Server: ${errorMessage}`);
         }
     }));
+
+    // Proof of concept: Execute SQL via MSSQL proxy (no credentials exposed)
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.executeSqlViaProxy', async () => {
+        const mssqlService = getMssqlConnectionService();
+        
+        try {
+            // Get available kernels from MSSQL
+            const kernels = await mssqlService.getAvailableKernels();
+            if (kernels.length === 0) {
+                vscode.window.showWarningMessage('No saved SQL connections found in MSSQL extension.');
+                return;
+            }
+
+            // Let user pick a kernel
+            const items = kernels.map(k => ({
+                label: k.name,
+                description: `${k.server} / ${k.database}`,
+                detail: `Auth: ${k.authenticationType}${k.userName ? ` (${k.userName})` : ''}`,
+                kernel: k
+            }));
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select a SQL connection to use',
+                title: 'MSSQL Proxy Kernel (Proof of Concept)'
+            });
+
+            if (!selected) {
+                return;
+            }
+
+            // Get SQL query from user
+            const query = await vscode.window.showInputBox({
+                prompt: 'Enter SQL query to execute',
+                placeHolder: 'SELECT TOP 10 * FROM sys.tables',
+                value: 'SELECT TOP 5 name, create_date FROM sys.tables ORDER BY create_date DESC'
+            });
+
+            if (!query) {
+                return;
+            }
+
+            // Execute via MSSQL proxy
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'Executing SQL via MSSQL Proxy',
+                    cancellable: false
+                },
+                async (progress) => {
+                    progress.report({ message: `Connecting to ${selected.kernel.name}...` });
+                    
+                    try {
+                        const result = await mssqlService.executeQueryOnKernel(selected.kernel.id, query);
+                        
+                        // Format and display results
+                        if (result && result.rows && result.rows.length > 0) {
+                            const columns = result.columnInfo?.map((c: any) => c.columnName) || Object.keys(result.rows[0]);
+                            
+                            // Create a simple table output
+                            let output = `**Query Results** (${result.rows.length} rows)\n\n`;
+                            output += '| ' + columns.join(' | ') + ' |\n';
+                            output += '| ' + columns.map(() => '---').join(' | ') + ' |\n';
+                            
+                            for (const row of result.rows.slice(0, 20)) { // Limit to 20 rows for display
+                                const values = row.map((cell: any) => cell?.displayValue ?? cell?.toString() ?? 'NULL');
+                                output += '| ' + values.join(' | ') + ' |\n';
+                            }
+                            
+                            if (result.rows.length > 20) {
+                                output += `\n*... and ${result.rows.length - 20} more rows*`;
+                            }
+
+                            // Show in output channel
+                            const outputChannel = vscode.window.createOutputChannel('MSSQL Proxy Results');
+                            outputChannel.clear();
+                            outputChannel.appendLine(`Query: ${query}`);
+                            outputChannel.appendLine(`Connection: ${selected.kernel.name}`);
+                            outputChannel.appendLine(`Rows: ${result.rows.length}`);
+                            outputChannel.appendLine('');
+                            outputChannel.appendLine('Results:');
+                            outputChannel.appendLine(JSON.stringify(result.rows.slice(0, 20), null, 2));
+                            outputChannel.show();
+
+                            vscode.window.showInformationMessage(
+                                `Query executed successfully! ${result.rows.length} rows returned. See output channel for results.`
+                            );
+                        } else {
+                            vscode.window.showInformationMessage('Query executed successfully. No rows returned.');
+                        }
+                    } catch (error: any) {
+                        vscode.window.showErrorMessage(`Query failed: ${error?.message || error}`);
+                    }
+                }
+            );
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Error: ${error?.message || error}`);
+        }
+    }));
 }
 
 export function registerFileCommands(context: vscode.ExtensionContext, parserServer: NotebookParserServer, clientMapper: ClientMapper) {
