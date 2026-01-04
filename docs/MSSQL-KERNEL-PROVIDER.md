@@ -179,3 +179,44 @@ getCompletions(connectionUri: string, query: string, position: number): Promise<
 3. [ ] Plan Phase 1 implementation
 4. [ ] Add comprehensive tests
 5. [ ] Update documentation
+
+## Future: SlickGrid-Based Table Renderer
+
+For ADS-like table experience with sorting, filtering, and export, implement a VS Code notebook renderer:
+
+### Architecture
+
+1. **Custom MIME type**: `application/vnd.polyglot.sql-results+json`
+2. **Notebook renderer contribution** in `package.json`:
+   ```json
+   "notebookRenderer": [{
+     "id": "polyglot-sql-results",
+     "entrypoint": "./out/sql-renderer.js",
+     "mimeTypes": ["application/vnd.polyglot.sql-results+json"]
+   }]
+   ```
+3. **SlickGrid bundle** - Use `slickgrid` npm package (MIT licensed, same as ADS uses)
+4. **Output format**:
+   ```json
+   {
+     "columns": [{"name": "col1", "type": "string"}, ...],
+     "rows": [[{"displayValue": "val", "isNull": false}, ...], ...],
+     "rowCount": 100
+   }
+   ```
+
+### Features to Implement
+
+- Column sorting (click header)
+- Column resize (drag border)
+- Row selection
+- Copy to clipboard
+- Export to CSV/JSON
+- VS Code theme integration via CSS variables
+- Virtualization for large result sets
+
+### Reference Implementation
+
+- ADS table component: `azuredatastudio/src/sql/base/browser/ui/table/`
+- SlickGrid: MIT licensed, `github.com/mleibman/SlickGrid`
+- Microsoft fork: `github.com/Microsoft/SlickGrid.ADS`
