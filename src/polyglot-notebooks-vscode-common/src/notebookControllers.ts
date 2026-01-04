@@ -331,6 +331,18 @@ export class DotNetNotebookKernel {
                 executionTask.executionOrder = undefined;
                 await executionTask.clearOutput(cell);
 
+                // Check if this is a proxy mode SQL connection
+                const notebookUri = cell.notebook.uri.toString();
+                const isProxy = sqlConnectionTracker.isProxyConnection(notebookUri);
+                const cellKernelName = vscodeUtilities.getCellKernelName(cell);
+                const isSqlCell = cellKernelName === 'sql' || cellKernelName?.startsWith('sql-');
+                
+                if (isProxy && isSqlCell) {
+                    // Execute via MSSQL proxy instead of .NET kernel
+                    await this.executeProxyCell(cell, executionTask);
+                    return;
+                }
+
                 const outputObserver = (output: vscodeLike.NotebookCellOutput) => {
                     outputUpdatePromise = outputUpdatePromise.catch(ex => {
                         Logger.default.error(`Failed to update output: ${ex}`);
@@ -383,6 +395,72 @@ export class DotNetNotebookKernel {
                 endExecution(undefined, cell, false);
                 throw err;
             }
+        }
+    }
+
+    private async executeProxyCell(cell: vscode.NotebookCell, executionTask: vscode.NotebookCellExecution): Promise<void> {
+        const notebookUri = cell.notebook.uri.toString();
+        const connectionUri = sqlConnectionTracker.getProxyConnectionUri(notebookUri);
+        
+        if (!connectionUri) {
+            const errorOutput = new vscode.NotebookCellOutput([
+                vscode.NotebookCellOutputItem.text('No proxy connection established. Use "Connect SQL (Proxy Mode)" first.', 'text/plain')
+            ]);
+            await executionTask.appendOutput(errorOutput);
+            executionTask.end(false, Date.now());
+            return;
+        }
+
+        const query = cell.document.getText();
+        
+        try {
+            // Execute via MSSQL's executeSimpleQuery command
+            const result = await vscode.commands.executeCommand<any>(
+                'mssql.connectionSharing.executeSimpleQuery',
+                connectionUri,
+                query
+            );
+            
+            if (result && result.rows && result.rows.length > 0) {
+                // Format as HTML table for nice display
+                const columns = result.columnInfo?.map((c: any) => c.columnName) || [];
+                
+                let html = '<table style="border-collapse: collapse; width: 100%;">';
+                html += '<thead><tr>';
+                for (const col of columns) {
+                    html += `<th style="border: 1px solid #ddd; padding: 8px; background-color: #4472C4; color: white;">${col}</th>`;
+                }
+                html += '</tr></thead><tbody>';
+                
+                for (const row of result.rows) {
+                    html += '<tr>';
+                    for (const cell of row) {
+                        const value = cell?.isNull ? '<i>NULL</i>' : (cell?.displayValue ?? '');
+                        html += `<td style="border: 1px solid #ddd; padding: 8px;">${value}</td>`;
+                    }
+                    html += '</tr>';
+                }
+                html += '</tbody></table>';
+                html += `<p style="color: #666; font-size: 12px;">${result.rows.length} row(s) returned</p>`;
+                
+                const htmlOutput = new vscode.NotebookCellOutput([
+                    vscode.NotebookCellOutputItem.text(html, 'text/html')
+                ]);
+                await executionTask.appendOutput(htmlOutput);
+                executionTask.end(true, Date.now());
+            } else {
+                const textOutput = new vscode.NotebookCellOutput([
+                    vscode.NotebookCellOutputItem.text('Query executed successfully. No rows returned.', 'text/plain')
+                ]);
+                await executionTask.appendOutput(textOutput);
+                executionTask.end(true, Date.now());
+            }
+        } catch (error: any) {
+            const errorOutput = new vscode.NotebookCellOutput([
+                vscode.NotebookCellOutputItem.text(`Query failed: ${error?.message || error}`, 'text/plain')
+            ]);
+            await executionTask.appendOutput(errorOutput);
+            executionTask.end(false, Date.now());
         }
     }
 
