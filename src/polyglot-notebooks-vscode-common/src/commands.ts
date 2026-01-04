@@ -277,110 +277,70 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             .forEach(async document => await vscode.commands.executeCommand('polyglot-notebook.stopCurrentNotebookKernel', document));
     }));
 
-    // Register Connect (to saved connection) command - uses proxy mode
+    // Register Connect (to saved connection) command - reconnects using proxy mode
+    // Happy path: Read connectionId from metadata -> getAvailableKernels() -> connect()
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSavedSql', async () => {
         const notebook = getCurrentNotebookDocument();
         if (!notebook) {
             return;
         }
 
-        const savedConnectionId = sqlConnectionTracker.getSavedConnectionId(notebook.uri.toString());
-        const savedConnectionName = sqlConnectionTracker.getSavedConnection(notebook.uri.toString());
-        
-        // Check if this was a proxy mode connection from metadata
         const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebook);
+        
+        if (!sqlMetadata.connectionId) {
+            // No saved connection - open picker
+            await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
+            return;
+        }
 
-        if (savedConnectionId && sqlMetadata.proxyMode) {
-            // Reconnect using proxy mode
-            console.log(`[Polyglot SQL] Reconnecting proxy connection: ${savedConnectionId}, name: ${savedConnectionName}`);
-            try {
-                const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
-                const connectionUri = await vscode.commands.executeCommand<string>(
-                    'mssql.connectionSharing.connect',
-                    extensionId,
-                    savedConnectionId
-                );
-                
-                if (connectionUri) {
-                    sqlConnectionTracker.setProxyConnection(
-                        notebook.uri.toString(),
-                        savedConnectionName || 'SQL Connection',
-                        savedConnectionId,
-                        connectionUri
+        console.log(`[Polyglot SQL] Reconnecting: ${sqlMetadata.connectionId}, name: ${sqlMetadata.connectionName}`);
+        
+        // Step 1: Get available kernels (this activates MSSQL extension and registers commands)
+        const mssqlService = getMssqlConnectionService();
+        const kernels = await mssqlService.getAvailableKernels();
+        const kernel = kernels.find(k => k.id === sqlMetadata.connectionId);
+        
+        if (!kernel) {
+            vscode.window.showWarningMessage(`Connection "${sqlMetadata.connectionName}" not found. Please select a new connection.`);
+            await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
+            return;
+        }
+        
+        // Step 2: Connect via MSSQL
+        try {
+            await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'Connecting SQL', cancellable: false },
+                async (progress) => {
+                    progress.report({ message: `Connecting to ${kernel.name}...` });
+                    
+                    const connectionUri = await vscode.commands.executeCommand<string>(
+                        'mssql.connectionSharing.connect',
+                        'ms-dotnetinteractive.polyglot-notebooks',
+                        kernel.id
                     );
+                    
+                    if (!connectionUri) {
+                        throw new Error('Failed to connect to database');
+                    }
+                    
+                    // Step 3: Store connection state
+                    sqlConnectionTracker.setProxyConnection(notebook.uri.toString(), kernel.name, kernel.id, connectionUri);
                     updateSqlConnectionStatusBar();
-                    vscode.window.showInformationMessage(`SQL Proxy connected: ${savedConnectionName}`);
-                } else {
-                    vscode.window.showErrorMessage('Failed to connect to database');
+                    vscode.window.showInformationMessage(`SQL connected: ${kernel.name}`);
                 }
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Connection failed: ${error?.message || error}`);
-            }
-        } else if (savedConnectionId) {
-            // Legacy mode - use old connection flow
-            console.log(`[Polyglot SQL] Connecting using legacy mode: ${savedConnectionId}, name: ${savedConnectionName}`);
-            await vscode.commands.executeCommand('polyglot-notebook.connectMssql', notebook, savedConnectionName, savedConnectionId);
-        } else if (savedConnectionName) {
-            // Fallback to connection name (legacy notebooks without connectionId)
-            console.log(`[Polyglot SQL] Connecting using connectionName: ${savedConnectionName}`);
-            await vscode.commands.executeCommand('polyglot-notebook.connectMssql', notebook, savedConnectionName);
+            );
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Connection failed: ${error?.message || error}`);
         }
     }));
 
-    // Register Change Connection command - uses proxy mode picker
+    // Register Change Connection command - opens picker
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.changeSqlConnection', async () => {
-        // Use proxy mode connection picker
         await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
     }));
 
-    // Register MSSQL connection command - now uses proxy mode by default
-    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectMssql', async (_notebookArg?: vscode.NotebookDocument, _savedConnectionName?: string, savedConnectionId?: string) => {
-        Logger.default.info('MSSQL Connect command triggered - using proxy mode');
-
-        // If we have a savedConnectionId, try to connect directly via proxy
-        if (savedConnectionId) {
-            const notebook = getCurrentNotebookDocument();
-            if (notebook) {
-                try {
-                    const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
-                    const connectionUri = await vscode.commands.executeCommand<string>(
-                        'mssql.connectionSharing.connect',
-                        extensionId,
-                        savedConnectionId
-                    );
-                    
-                    if (connectionUri) {
-                        // Look up display name
-                        const config = vscode.workspace.getConfiguration('mssql');
-                        const connections = config.get<any[]>('connections') || [];
-                        const conn = connections.find((c: any) => c.id === savedConnectionId);
-                        const displayName = conn?.profileName || `${conn?.database} (${conn?.server})` || 'SQL Connection';
-                        
-                        sqlConnectionTracker.setProxyConnection(
-                            notebook.uri.toString(),
-                            displayName,
-                            savedConnectionId,
-                            connectionUri
-                        );
-                        
-                        // Save to metadata
-                        const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
-                            notebook.metadata,
-                            { connectionId: savedConnectionId, connectionName: displayName, connectionProfileName: displayName, proxyMode: true }
-                        );
-                        await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
-                        
-                        updateSqlConnectionStatusBar();
-                        vscode.window.showInformationMessage(`SQL Proxy connected: ${displayName}`);
-                        return;
-                    }
-                } catch (error: any) {
-                    console.log(`[Polyglot SQL] Direct proxy connect failed, falling back to picker: ${error?.message}`);
-                }
-            }
-        }
-        
-        // Fall back to proxy mode picker
+    // Register MSSQL connection command - redirects to proxy picker
+    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectMssql', async () => {
         await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
     }));
 
