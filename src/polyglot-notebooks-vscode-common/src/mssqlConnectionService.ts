@@ -22,6 +22,19 @@ export interface IMssqlConnectionInfo {
 }
 
 /**
+ * Information about a connection that can be used as a notebook kernel.
+ * This interface exposes only metadata - no credentials or secrets.
+ */
+export interface IConnectionKernelInfo {
+    id: string;
+    name: string;
+    server: string;
+    database: string;
+    authenticationType: string;
+    userName?: string;
+}
+
+/**
  * Interface for connection sharing service (allows using mssql's internal auth)
  */
 export interface IConnectionSharingService {
@@ -29,6 +42,8 @@ export interface IConnectionSharingService {
     getConnectionString(extensionId: string, connectionId: string): Promise<string | undefined>;
     disconnect(connectionUri: string): void;
     isConnected(connectionUri: string): boolean;
+    executeSimpleQuery(connectionUri: string, queryString: string): Promise<any>;
+    getAvailableKernels(extensionId: string): Promise<IConnectionKernelInfo[]>;
 }
 
 /**
@@ -115,6 +130,70 @@ export class MssqlConnectionService {
         }
 
         return mssqlExtension.exports as IMssqlExtensionApi;
+    }
+
+    /**
+     * Get available SQL kernels from the MSSQL extension.
+     * These are saved connections that can be used as execution targets.
+     * No credentials are exposed - only metadata.
+     * @returns Array of kernel info objects, or empty array if MSSQL extension is not available
+     */
+    public async getAvailableKernels(): Promise<IConnectionKernelInfo[]> {
+        try {
+            const api = await this.getMssqlExtensionApi();
+            if (!api?.connectionSharing) {
+                console.log('[Polyglot SQL] MSSQL extension or connectionSharing API not available');
+                return [];
+            }
+
+            const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
+            
+            // Use type assertion since getAvailableKernels is a new API
+            const connectionSharingAny = api.connectionSharing as any;
+            if (!connectionSharingAny.getAvailableKernels) {
+                console.log('[Polyglot SQL] getAvailableKernels API not available - MSSQL extension may need updating');
+                return [];
+            }
+
+            const kernels = await connectionSharingAny.getAvailableKernels(extensionId);
+            console.log(`[Polyglot SQL] Got ${kernels.length} available kernels from MSSQL`);
+            return kernels as IConnectionKernelInfo[];
+        } catch (error: any) {
+            console.log('[Polyglot SQL] Error getting available kernels:', error?.message || error);
+            return [];
+        }
+    }
+
+    /**
+     * Connect to a kernel and execute a query using MSSQL's internal connection.
+     * No credentials are exposed - MSSQL handles all authentication.
+     * @param connectionId The connection ID to use
+     * @param query The SQL query to execute
+     * @returns The query result, or undefined if failed
+     */
+    public async executeQueryOnKernel(connectionId: string, query: string): Promise<any> {
+        try {
+            const api = await this.getMssqlExtensionApi();
+            if (!api?.connectionSharing) {
+                throw new Error('MSSQL extension or connectionSharing API not available');
+            }
+
+            const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
+            
+            // Connect to get a connectionUri
+            const connectionUri = await api.connectionSharing.connect(extensionId, connectionId);
+            if (!connectionUri) {
+                throw new Error('Failed to connect to database');
+            }
+
+            // Execute the query
+            const result = await api.connectionSharing.executeSimpleQuery(connectionUri, query);
+            
+            return result;
+        } catch (error: any) {
+            console.log('[Polyglot SQL] Error executing query on kernel:', error?.message || error);
+            throw error;
+        }
     }
 
     /**
