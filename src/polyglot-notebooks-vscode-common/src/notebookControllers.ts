@@ -438,6 +438,15 @@ export class DotNetNotebookKernel {
         }
     }
 
+    private escapeHtml(text: string): string {
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     private async executeProxyCell(cell: vscode.NotebookCell, executionTask: vscode.NotebookCellExecution): Promise<void> {
         const notebookUri = cell.notebook.uri.toString();
         const connectionUri = sqlConnectionTracker.getProxyConnectionUri(notebookUri);
@@ -462,26 +471,40 @@ export class DotNetNotebookKernel {
             );
             
             if (result && result.rows && result.rows.length > 0) {
-                // Format as HTML table for nice display
+                // Format as HTML table matching Polyglot's TabularDataResource style
                 const columns = result.columnInfo?.map((c: any) => c.columnName) || [];
                 
-                let html = '<table style="border-collapse: collapse; width: 100%;">';
-                html += '<thead><tr>';
+                // Use CSS variables for VS Code theme compatibility
+                let html = `<style>
+                    .sql-results-table { border-collapse: collapse; font-family: var(--vscode-editor-font-family, monospace); font-size: var(--vscode-editor-font-size, 13px); }
+                    .sql-results-table th { text-align: left; padding: 4px 8px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-panel-border, #454545); font-weight: 600; }
+                    .sql-results-table td { padding: 4px 8px; border: 1px solid var(--vscode-panel-border, #454545); }
+                    .sql-results-table tr:nth-child(even) { background: var(--vscode-editor-background); }
+                    .sql-results-table tr:nth-child(odd) { background: var(--vscode-editorWidget-background); }
+                    .sql-results-table tr:hover { background: var(--vscode-list-hoverBackground); }
+                    .sql-results-null { color: var(--vscode-descriptionForeground, #888); font-style: italic; }
+                    .sql-results-footer { margin-top: 4px; font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+                </style>`;
+                
+                html += '<table class="sql-results-table"><thead><tr>';
                 for (const col of columns) {
-                    html += `<th style="border: 1px solid #ddd; padding: 8px; background-color: #4472C4; color: white;">${col}</th>`;
+                    html += `<th>${this.escapeHtml(col)}</th>`;
                 }
                 html += '</tr></thead><tbody>';
                 
                 for (const row of result.rows) {
                     html += '<tr>';
                     for (const cell of row) {
-                        const value = cell?.isNull ? '<i>NULL</i>' : (cell?.displayValue ?? '');
-                        html += `<td style="border: 1px solid #ddd; padding: 8px;">${value}</td>`;
+                        if (cell?.isNull) {
+                            html += '<td class="sql-results-null">NULL</td>';
+                        } else {
+                            html += `<td>${this.escapeHtml(cell?.displayValue ?? '')}</td>`;
+                        }
                     }
                     html += '</tr>';
                 }
                 html += '</tbody></table>';
-                html += `<p style="color: #666; font-size: 12px;">${result.rows.length} row(s) returned</p>`;
+                html += `<div class="sql-results-footer">${result.rows.length} row(s) returned</div>`;
                 
                 const htmlOutput = new vscode.NotebookCellOutput([
                     vscode.NotebookCellOutputItem.text(html, 'text/html')
