@@ -29,7 +29,7 @@ internal static class ToolsServiceClientExtensions
         return await serviceClient.ConnectAsync(connectionParams);
     }
     
-    private static string ExtractAndRemoveAccessToken(ref string connectionString)
+    internal static string ExtractAndRemoveAccessToken(ref string connectionString)
     {
         // Look for AccessToken=... in the connection string
         var match = Regex.Match(connectionString, @"AccessToken\s*=\s*([^;]+)", RegexOptions.IgnoreCase);

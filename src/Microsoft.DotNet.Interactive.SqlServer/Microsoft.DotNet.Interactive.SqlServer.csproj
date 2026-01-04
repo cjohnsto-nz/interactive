@@ -5,6 +5,10 @@
     <OutputType>Library</OutputType>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Microsoft.DotNet.Interactive.SqlServer.Tests" />
+  </ItemGroup>
+
  <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageDescription>Microsoft SQL Server support for .NET Interactive</PackageDescription>
