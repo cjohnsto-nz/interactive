@@ -11,6 +11,9 @@ import { getDiagnosticCollection } from './diagnostics';
 import { provideSignatureHelp } from './languageServices/signatureHelp';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
 import * as constants from './constants';
+import * as sqlConnectionTracker from './sqlConnectionTracker';
+import * as metadataUtilities from './metadataUtilities';
+import { Logger } from './polyglot-notebooks';
 
 function getNotebookDcoumentFromCellDocument(cellDocument: vscode.TextDocument): vscode.NotebookDocument | undefined {
     const notebookDocument = vscode.workspace.notebookDocuments.find(notebook => notebook.getCells().some(cell => cell.document === cellDocument));
@@ -32,9 +35,18 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
         if (notebookDocument) {
             const cell = getCellFromCellDocument(notebookDocument, document);
             if (cell) {
-                const kernelName = getCellKernelName(cell);
+                const cellMetadata = metadataUtilities.getNotebookCellMetadataFromNotebookCellElement(cell);
+                const kernelName = cellMetadata.kernelName ?? 'csharp';
                 const documentText = document.getText();
-                const completionPromise = provideCompletion(this.clientMapper, kernelName, notebookDocument.uri, documentText, position, this.languageServiceDelay);
+
+                // Check if this is a SQL cell in proxy mode
+                if (kernelName === 'sql' && sqlConnectionTracker.isProxyConnection(notebookDocument.uri.toString())) {
+                    Logger.default.info(`[Polyglot SQL] Providing proxy completions for SQL cell at line ${position.line}, column ${position.character}`);
+                    return this.provideProxySqlCompletions(notebookDocument, documentText, position);
+                }
+
+                // Default: use .NET kernel completions
+                const completionPromise = provideCompletion(this.clientMapper, getCellKernelName(cell), notebookDocument.uri, documentText, position, this.languageServiceDelay);
                 return ensureErrorsAreRejected(completionPromise, result => {
                     let range: vscode.Range | undefined = undefined;
                     if (result.linePositionSpan) {
@@ -61,6 +73,55 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
                     return completionList;
                 });
             }
+        }
+    }
+
+    /**
+     * Provide SQL completions via MSSQL extension proxy.
+     */
+    private async provideProxySqlCompletions(
+        notebookDocument: vscode.NotebookDocument,
+        documentText: string,
+        position: vscode.Position
+    ): Promise<vscode.CompletionList> {
+        const connectionUri = sqlConnectionTracker.getProxyConnectionUri(notebookDocument.uri.toString());
+        if (!connectionUri) {
+            Logger.default.info('[Polyglot SQL] No proxy connection URI for completions');
+            return new vscode.CompletionList([], false);
+        }
+
+        try {
+            Logger.default.info(`[Polyglot SQL] Requesting completions from MSSQL extension for URI: ${connectionUri}`);
+            
+            const completions = await vscode.commands.executeCommand<any[]>(
+                'mssql.connectionSharing.getCompletions',
+                connectionUri,
+                documentText,
+                position.line,
+                position.character
+            );
+
+            if (!completions || completions.length === 0) {
+                Logger.default.info('[Polyglot SQL] No completions returned from MSSQL');
+                return new vscode.CompletionList([], false);
+            }
+
+            Logger.default.info(`[Polyglot SQL] Received ${completions.length} completions from MSSQL`);
+
+            const completionItems: vscode.CompletionItem[] = completions.map((item: any) => ({
+                label: item.label,
+                kind: item.kind as vscode.CompletionItemKind,
+                detail: item.detail,
+                documentation: item.documentation,
+                insertText: item.insertText || item.label,
+                filterText: item.filterText,
+                sortText: item.sortText,
+            }));
+
+            return new vscode.CompletionList(completionItems, false);
+        } catch (error: any) {
+            Logger.default.error(`[Polyglot SQL] Error getting proxy completions: ${error?.message || error}`);
+            return new vscode.CompletionList([], false);
         }
     }
 
