@@ -39,8 +39,16 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
                 const kernelName = cellMetadata.kernelName ?? 'csharp';
                 const documentText = document.getText();
 
-                // Check if this is a SQL cell in proxy mode
-                if (kernelName === 'sql' && sqlConnectionTracker.isProxyConnection(notebookDocument.uri.toString())) {
+                // Check if this is a SQL cell in proxy mode (vscode-mssql connection)
+                // Only intercept if we have an active proxy connection for this notebook
+                const notebookUri = notebookDocument.uri.toString();
+                const isProxyMode = sqlConnectionTracker.isProxyConnection(notebookUri);
+                
+                Logger.default.info(`[Polyglot SQL] Completion check: kernelName=${kernelName}, notebookUri=${notebookUri}, isProxyMode=${isProxyMode}`);
+                
+                if (isProxyMode) {
+                    // This notebook has an active vscode-mssql proxy connection
+                    // Route SQL completions through MSSQL extension
                     Logger.default.info(`[Polyglot SQL] Providing proxy completions for SQL cell at line ${position.line}, column ${position.character}`);
                     return this.provideProxySqlCompletions(notebookDocument, documentText, position);
                 }
