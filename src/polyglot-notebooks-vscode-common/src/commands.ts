@@ -19,13 +19,9 @@ import { PromiseCompletionSource } from './polyglot-notebooks/promiseCompletionS
 
 import * as constants from './constants';
 import { getMssqlConnectionService } from './mssqlConnectionService';
-import { Logger } from './polyglot-notebooks/logger';
-import * as sqlConnectionTracker from './sqlConnectionTracker';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
 import * as commandsAndEvents from './polyglot-notebooks/commandsAndEvents';
 
-// Note: Notebook-level SQL connection status bar has been removed.
-// SQL connections are now managed per-cell via explicit sql-* kernels.
 
 export async function registerAcquisitionCommands(context: vscode.ExtensionContext, diagnosticChannel: ReportChannel): Promise<void> {
     const dotnetConfig = vscode.workspace.getConfiguration(constants.DotnetConfigurationSectionName);
@@ -146,7 +142,8 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                 .filter(i => i.kind === "KernelSpecConnection"));
         const recentlyUsedConnectionOptions = mapCodeExpansionInfosToQuickPickOptions(
             result.codeExpansionInfos
-                .filter(i => i.kind === "RecentConnection"));
+                .filter(i => i.kind === "RecentConnection")
+                .filter(i => !metadataUtilities.isMssqlProxyKernel(i.name))); // Exclude mssql-* - no connectionId available
 
         // Add MSSQL Extension option for creating new SQL proxy kernels
         const mssqlExtensionOption = {
@@ -171,17 +168,33 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             if (selectedOption.isMssqlExtension) {
                 // Open MSSQL extension connection picker for cell-level kernel
                 await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxyForCell');
-            } else if (selectedOption.label?.startsWith('sql-')) {
-                // For sql-* proxy kernels, set the cell's kernel directly instead of inserting directive
+            } else if (metadataUtilities.isMssqlProxyKernel(selectedOption.label)) {
+                // For mssql-* proxy kernels, set the cell's kernel and register the proxy kernel
+                const kernelName = selectedOption.label;
                 const selection = vscode.window.activeNotebookEditor?.selection;
                 if (selection) {
                     const cell = notebook.cellAt(selection.start);
                     const codeCell = await vscodeUtilities.ensureCellIsCodeCell(cell);
                     const notebookCellMetadata = metadataUtilities.getNotebookCellMetadataFromNotebookCellElement(cell);
-                    notebookCellMetadata.kernelName = selectedOption.label;
+                    notebookCellMetadata.kernelName = kernelName;
                     const newRawMetadata = metadataUtilities.getRawNotebookCellMetadataFromNotebookCellMetadata(notebookCellMetadata);
                     const mergedMetadata = metadataUtilities.mergeRawMetadata(cell.metadata, newRawMetadata);
                     await vscodeNotebookManagement.updateNotebookCellMetadata(codeCell.notebook.uri, codeCell.index, mergedMetadata);
+                    
+                    // Register the proxy kernel in .NET backend for language services
+                    try {
+                        const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
+                        const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
+                            commandsAndEvents.SubmitCodeType,
+                            {
+                                code,
+                                targetKernelName: '.NET'
+                            } as commandsAndEvents.SubmitCode
+                        );
+                        await client.channel.sender.send(submitCommand);
+                    } catch (e: any) {
+                        // Proxy kernel registration failed - continue anyway
+                    }
                 }
             } else {
                 const selection = vscode.window.activeNotebookEditor?.selection;
@@ -295,7 +308,7 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                         throw new Error('Failed to connect to database');
                     }
                     
-                    const kernelName = `sql-${kernel.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                    const kernelName = `${metadataUtilities.MSSQL_PROXY_KERNEL_PREFIX}${kernel.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
                     
                     // Register the proxy kernel with .NET (but don't set as notebook-level connection)
                     try {
@@ -533,8 +546,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, parserSer
         'JavaScript': 'javascript',
         'Markdown': 'markdown',
         'Mermaid': 'mermaid',
-        'PowerShell': 'pwsh',
-        'SQL': 'sql'
+        'PowerShell': 'pwsh'
     };
 
     async function getNewNotebookLanguage(preferDefault: boolean): Promise<string | undefined> {

@@ -187,9 +187,8 @@ export class DotNetNotebookKernel {
                 // Check if this is a SQL cell that should be executed via MSSQL proxy
                 const cellKernelName = vscodeUtilities.getCellKernelName(cell);
                 
-                // Execute via proxy if cell targets a sql-* kernel (cell-level SQL connection)
-                // or if it's the base 'sql' kernel (will show error message to use cell-level kernel)
-                if (cellKernelName?.startsWith('sql-') || cellKernelName === 'sql') {
+                // Execute via proxy if cell targets an mssql-* kernel (cell-level SQL connection)
+                if (metadataUtilities.isMssqlProxyKernel(cellKernelName)) {
                     await this.executeProxyCell(cell, executionTask);
                     return;
                 }
@@ -263,12 +262,12 @@ export class DotNetNotebookKernel {
         const cellKernelName = vscodeUtilities.getCellKernelName(cell);
         
         // Get connection URI based on cell's kernel:
-        // - If cell targets a specific sql-* kernel, use ONLY that kernel's connection (no fallback!)
-        // - If cell targets generic 'sql', use the notebook-level proxy connection
+        // - If cell targets a specific mssql-* kernel, use ONLY that kernel's connection (no fallback!)
+        // - If cell targets generic 'sql', show error message
         let connectionUri: string | undefined;
         let connectionSource = 'none';
         
-        if (cellKernelName && cellKernelName.startsWith('sql-') && cellKernelName !== 'sql') {
+        if (metadataUtilities.isMssqlProxyKernel(cellKernelName)) {
             // Per-cell kernel selection - always reconnect to get fresh URI
             // (MSSQL extension invalidates URIs, so caching doesn't work reliably)
             const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(cell.notebook);
@@ -303,7 +302,6 @@ export class DotNetNotebookKernel {
             }
             
             if (!connectionUri) {
-                // No fallback! The kernel's connection must be established first
                 const errorOutput = new vscode.NotebookCellOutput([
                     vscode.NotebookCellOutputItem.text(`No connection found for kernel "${cellKernelName}". Please connect this kernel using "Connect to new cell kernel" menu.`, 'text/plain')
                 ]);
@@ -311,15 +309,6 @@ export class DotNetNotebookKernel {
                 executionTask.end(false, Date.now());
                 return;
             }
-        } else {
-            // Base 'sql' kernel is not supported as a proxy kernel
-            // User must use explicit cell-level kernels (sql-*)
-            const errorOutput = new vscode.NotebookCellOutput([
-                vscode.NotebookCellOutputItem.text(`The base 'sql' kernel is not supported. Please use "Connect to new cell kernel" to create a named SQL kernel (e.g., sql-MyConnection).`, 'text/plain')
-            ]);
-            await executionTask.appendOutput(errorOutput);
-            executionTask.end(false, Date.now());
-            return;
         }
         
         const query = cell.document.getText();
@@ -605,10 +594,9 @@ async function registerSqlProxyKernelsFromMetadata(client: InteractiveClient, do
     const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(document);
     const kernelsToRegister: string[] = [];
     
-    // Find all sql-* kernels with connectionId in metadata
-    // Note: Only cell-level sql-* kernels are supported, not the base 'sql' kernel
+    // Find all mssql-* kernels with connectionId in metadata
     for (const item of notebookMetadata.kernelInfo.items) {
-        if (item.name.startsWith('sql-') && (item as any).connectionId) {
+        if (metadataUtilities.isMssqlProxyKernel(item.name) && (item as any).connectionId) {
             kernelsToRegister.push(item.name);
         }
     }

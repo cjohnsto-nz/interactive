@@ -1,14 +1,14 @@
 // Copyright (c) .NET Foundation and contributors. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-// Track SQL connections per cell-level kernel (sql-* kernels only)
+// Track SQL connections per cell-level kernel (mssql-* kernels only)
 // Notebook-level SQL connections have been removed - all SQL kernels are now explicit cell-level kernels.
 
 // Track connection URIs by connection ID (GUID) - shared across all notebooks
 const connectionUrisByConnectionId = new Map<string, string>();
 
 // Track which kernel name is associated with which connection ID
-// Key: kernelName (e.g., "sql-AllianceProd"), Value: connectionId (GUID)
+// Key: kernelName (e.g., "mssql-AllianceProd"), Value: connectionId (GUID)
 const kernelToConnectionId = new Map<string, string>();
 
 // Track pending connection promises to prevent race conditions
@@ -16,8 +16,8 @@ const kernelToConnectionId = new Map<string, string>();
 const pendingConnections = new Map<string, Promise<string | undefined>>();
 
 /**
- * Get the cached connection URI for a cell-level SQL kernel (sql-* kernel).
- * @param kernelName The kernel name (e.g., "sql-MyConnection")
+ * Get the cached connection URI for a cell-level MSSQL kernel (mssql-* kernel).
+ * @param kernelName The kernel name (e.g., "mssql-MyConnection")
  * @returns The cached connection URI, or undefined if not cached
  */
 export function getProxyConnectionUriForKernel(kernelName: string): string | undefined {
@@ -29,8 +29,8 @@ export function getProxyConnectionUriForKernel(kernelName: string): string | und
 }
 
 /**
- * Cache the connection for a cell-level SQL kernel.
- * @param kernelName The kernel name (e.g., "sql-MyConnection")
+ * Cache the connection for a cell-level MSSQL kernel.
+ * @param kernelName The kernel name (e.g., "mssql-MyConnection")
  * @param connectionId The MSSQL connection ID (GUID from mssql settings)
  * @param connectionUri The MSSQL connection URI (returned from mssql.connectionSharing.connect)
  */
@@ -41,7 +41,7 @@ export function setKernelConnection(kernelName: string, connectionId: string, co
 
 /**
  * Get the connection ID for a kernel name.
- * @param kernelName The kernel name (e.g., "sql-MyConnection")
+ * @param kernelName The kernel name (e.g., "mssql-MyConnection")
  * @returns The connection ID (GUID), or undefined if not found
  */
 export function getConnectionIdForKernel(kernelName: string): string | undefined {

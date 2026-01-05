@@ -75,6 +75,14 @@ export function isSqlNotebook(notebook: vscodeLike.NotebookDocument): boolean {
 // Note: Notebook-level SQL connection metadata has been removed.
 // SQL connections are now managed per-cell via kernel connectionId in kernelInfo.items.
 
+// MSSQL proxy kernel prefix - used for cell-level SQL connections via MSSQL extension
+export const MSSQL_PROXY_KERNEL_PREFIX = 'mssql-';
+
+// Check if a kernel name is an MSSQL proxy kernel (cell-level SQL connection)
+export function isMssqlProxyKernel(kernelName: string | undefined): boolean {
+    return kernelName !== undefined && kernelName.startsWith(MSSQL_PROXY_KERNEL_PREFIX);
+}
+
 export function getNotebookCellMetadataFromInteractiveDocumentElement(interactiveDocumentElement: commandsAndEvents.InteractiveDocumentElement): NotebookCellMetadata {
     const cellMetadata: NotebookCellMetadata = {};
 

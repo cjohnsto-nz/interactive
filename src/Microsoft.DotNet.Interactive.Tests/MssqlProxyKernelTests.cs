@@ -19,11 +19,11 @@ public class MssqlProxyKernelTests
         using var kernel = new CompositeKernel();
         kernel.AddConnectDirective(new ConnectMssqlProxyDirective());
 
-        var result = await kernel.SubmitCodeAsync("#!connect mssql-proxy --kernel-name sql-TestKernel");
+        var result = await kernel.SubmitCodeAsync("#!connect mssql-proxy --kernel-name mssql-TestKernel");
 
         result.Events.Should().NotContainErrors();
         
-        var childKernel = kernel.ChildKernels.FirstOrDefault(k => k.Name == "sql-TestKernel");
+        var childKernel = kernel.ChildKernels.FirstOrDefault(k => k.Name == "mssql-TestKernel");
         childKernel.Should().NotBeNull();
         childKernel.Should().BeOfType<MssqlProxyKernel>();
     }
@@ -31,7 +31,7 @@ public class MssqlProxyKernelTests
     [Fact]
     public async Task MssqlProxyKernel_handles_RequestCompletions()
     {
-        var kernel = new MssqlProxyKernel("sql-test");
+        var kernel = new MssqlProxyKernel("mssql-test");
 
         var result = await kernel.SendAsync(new RequestCompletions("SELECT ", new LinePosition(0, 7)));
 
@@ -42,7 +42,7 @@ public class MssqlProxyKernelTests
     [Fact]
     public async Task MssqlProxyKernel_handles_RequestDiagnostics()
     {
-        var kernel = new MssqlProxyKernel("sql-test");
+        var kernel = new MssqlProxyKernel("mssql-test");
 
         var result = await kernel.SendAsync(new RequestDiagnostics("SELECT * FROM test"));
 
@@ -53,7 +53,7 @@ public class MssqlProxyKernelTests
     [Fact]
     public async Task MssqlProxyKernel_handles_RequestHoverText()
     {
-        var kernel = new MssqlProxyKernel("sql-test");
+        var kernel = new MssqlProxyKernel("mssql-test");
 
         var result = await kernel.SendAsync(new RequestHoverText("SELECT", new LinePosition(0, 3)));
 
@@ -64,7 +64,7 @@ public class MssqlProxyKernelTests
     [Fact]
     public async Task MssqlProxyKernel_handles_RequestSignatureHelp()
     {
-        var kernel = new MssqlProxyKernel("sql-test");
+        var kernel = new MssqlProxyKernel("mssql-test");
 
         var result = await kernel.SendAsync(new RequestSignatureHelp("GETDATE(", new LinePosition(0, 8)));
 

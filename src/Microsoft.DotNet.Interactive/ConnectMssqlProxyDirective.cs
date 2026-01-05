@@ -12,10 +12,21 @@ namespace Microsoft.DotNet.Interactive;
 
 /// <summary>
 /// Connect directive for registering MSSQL proxy kernels.
-/// Usage: #!connect mssql-proxy --kernel-name sql-MyConnection
+/// Usage: #!connect mssql-proxy --kernel-name mssql-MyConnection
 /// </summary>
 public class ConnectMssqlProxyDirective : ConnectKernelDirective<ConnectMssqlProxyKernel>
 {
+    /// <summary>
+    /// Prefix for MSSQL proxy kernel names (e.g., "mssql-MyConnection").
+    /// </summary>
+    public const string KernelNamePrefix = "mssql-";
+
+    /// <summary>
+    /// Checks if a kernel name is an MSSQL proxy kernel.
+    /// </summary>
+    public static bool IsMssqlProxyKernel(string kernelName) => 
+        kernelName?.StartsWith(KernelNamePrefix) == true;
+
     public ConnectMssqlProxyDirective()
         : base("mssql-proxy", "Registers an MSSQL proxy kernel for language service support")
     {
@@ -27,9 +38,7 @@ public class ConnectMssqlProxyDirective : ConnectKernelDirective<ConnectMssqlPro
     {
         var kernelName = connectCommand.ConnectedKernelName;
         
-        // Only cell-level SQL kernels (sql-*) are supported
-        // The base 'sql' kernel is not supported as a proxy kernel
-        if (kernelName == "sql")
+        if (!IsMssqlProxyKernel(kernelName))
         {
             return Task.FromResult<IEnumerable<Kernel>>(Array.Empty<Kernel>());
         }

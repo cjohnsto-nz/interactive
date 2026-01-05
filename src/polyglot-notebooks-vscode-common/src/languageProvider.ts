@@ -37,9 +37,9 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
                 const kernelName = getCellKernelName(cell);
                 const documentText = document.getText();
                 
-                // Check if this is a SQL proxy kernel - route to MSSQL extension for completions
+                // Check if this is an MSSQL proxy kernel - route to MSSQL extension for completions
                 // Only intercept if it's a proxy connection (has connectionId in metadata)
-                if (kernelName === 'sql' || kernelName?.startsWith('sql-')) {
+                if (metadataUtilities.isMssqlProxyKernel(kernelName)) {
                     const isProxyKernel = this.isSqlProxyKernel(notebookDocument, kernelName);
                     if (isProxyKernel) {
                         return this.provideSqlCompletions(notebookDocument, cell, kernelName, documentText, position);
@@ -77,9 +77,8 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
     }
     
     private isSqlProxyKernel(notebookDocument: vscode.NotebookDocument, kernelName: string): boolean {
-        // Only cell-level SQL kernels (sql-*) are supported as proxy kernels
-        // The base 'sql' kernel is not a proxy kernel
-        if (!kernelName.startsWith('sql-')) {
+        // Only cell-level MSSQL kernels (mssql-*) are supported as proxy kernels
+        if (!metadataUtilities.isMssqlProxyKernel(kernelName)) {
             return false;
         }
         
@@ -127,8 +126,8 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
         position: vscode.Position
     ): Promise<vscode.CompletionList | undefined> {
         try {
-            // Only cell-level SQL kernels (sql-*) are supported
-            if (!kernelName.startsWith('sql-')) {
+            // Only cell-level MSSQL kernels (mssql-*) are supported
+            if (!metadataUtilities.isMssqlProxyKernel(kernelName)) {
                 return undefined;
             }
             
