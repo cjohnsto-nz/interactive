@@ -4,20 +4,34 @@
 
 This document describes the MSSQL Kernel Provider approach for secure SQL execution in Polyglot Notebooks. Instead of passing credentials to the .NET kernel, SQL execution is delegated to the MSSQL extension which handles all authentication internally.
 
+**Key Design Decisions:**
+- All SQL kernels use the `mssql-` prefix (e.g., `mssql-MyConnection`)
+- SQL connections are **cell-level only** - no notebook-level SQL kernel
+- The base `sql` kernel is not supported; users must create named `mssql-*` kernels
+- `mssql-*` kernels are filtered from the "Recent kernels" list (no `connectionId` available for re-registration)
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Polyglot Notebooks                          │
 │  ┌─────────────────┐    ┌─────────────────────────────────────┐ │
-│  │  SQL Notebook   │    │     Proxy Kernel (TypeScript)       │ │
-│  │  ┌───────────┐  │    │  - Intercepts SQL cell execution    │ │
-│  │  │ SQL Cell  │──┼────│  - Routes to MSSQL extension        │ │
-│  │  └───────────┘  │    │  - Formats results for display      │ │
-│  └─────────────────┘    └──────────────┬──────────────────────┘ │
-└────────────────────────────────────────┼────────────────────────┘
-                                         │ VS Code Commands
-                                         ▼
+│  │  Notebook       │    │     MssqlProxyKernel (.NET)         │ │
+│  │  ┌───────────┐  │    │  - Registered via #!connect         │ │
+│  │  │ mssql-*   │──┼────│  - Handles language service requests│ │
+│  │  │ SQL Cell  │  │    │  - Returns empty results (proxy)    │ │
+│  │  └───────────┘  │    └──────────────┬──────────────────────┘ │
+│  └─────────────────┘                   │                        │
+│                                        │                        │
+│  ┌─────────────────────────────────────▼──────────────────────┐ │
+│  │           notebookControllers.ts (TypeScript)              │ │
+│  │  - executeProxyCell() intercepts mssql-* cell execution    │ │
+│  │  - Routes to MSSQL extension for actual execution          │ │
+│  │  - Formats results as HTML tables                          │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+└─────────────────────────────┼───────────────────────────────────┘
+                              │ VS Code Commands
+                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      MSSQL Extension                            │
 │  ┌─────────────────────────────────────────────────────────────┐│
@@ -25,8 +39,7 @@ This document describes the MSSQL Kernel Provider approach for secure SQL execut
 │  │  - getAvailableKernels() → List saved connections           ││
 │  │  - connect() → Establish connection, return URI             ││
 │  │  - executeSimpleQuery() → Run SQL, return results           ││
-│  │  - [Future] executeQuery() → Full query with streaming      ││
-│  │  - [Future] getCompletions() → Intellisense support         ││
+│  │  - getCompletions() → Intellisense support                  ││
 │  └──────────────────────────┬──────────────────────────────────┘│
 │                             │                                    │
 │  ┌──────────────────────────▼──────────────────────────────────┐│
@@ -45,38 +58,64 @@ This document describes the MSSQL Kernel Provider approach for secure SQL execut
 3. **Permission Model**: Extensions must be approved to use connections
 4. **Audit Trail**: All connection usage is logged by MSSQL
 
-## Current Implementation (POC)
+## Current Implementation
+
+### Kernel Naming Convention
+
+All MSSQL proxy kernels use the `mssql-` prefix:
+- `mssql-MyConnection`
+- `mssql-ProductionDB`
+- `mssql-AllianceUAT`
+
+Helper functions are provided on both .NET and TypeScript sides:
+
+**.NET (`ConnectMssqlProxyDirective.cs`):**
+```csharp
+public const string KernelNamePrefix = "mssql-";
+public static bool IsMssqlProxyKernel(string kernelName) => 
+    kernelName?.StartsWith(KernelNamePrefix) == true;
+```
+
+**TypeScript (`metadataUtilities.ts`):**
+```typescript
+export const MSSQL_PROXY_KERNEL_PREFIX = 'mssql-';
+export function isMssqlProxyKernel(kernelName: string | undefined): boolean {
+    return kernelName !== undefined && kernelName.startsWith(MSSQL_PROXY_KERNEL_PREFIX);
+}
+```
 
 ### MSSQL Extension APIs
 
 | API | Status | Description |
 |-----|--------|-------------|
 | `getAvailableKernels(extensionId)` | ✅ Implemented | Returns list of saved connections as kernel metadata |
-| `connect(extensionId, connectionId)` | ✅ Existing | Establishes connection, returns connectionUri |
-| `executeSimpleQuery(connectionUri, query)` | ✅ Existing | Executes query, returns all results |
-| `disconnect(connectionUri)` | ✅ Existing | Closes connection |
+| `connect(extensionId, connectionId)` | ✅ Implemented | Establishes connection, returns connectionUri |
+| `executeSimpleQuery(connectionUri, query)` | ✅ Implemented | Executes query, returns all results |
+| `getCompletions(connectionUri, text, line, column)` | ✅ Implemented | Returns IntelliSense completions |
+| `disconnect(connectionUri)` | ✅ Implemented | Closes connection |
 
 ### Polyglot Extension Components
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| `MssqlConnectionService.getAvailableKernels()` | ✅ Implemented | Calls MSSQL API |
-| `MssqlConnectionService.executeQueryOnKernel()` | ✅ Implemented | Connect + execute |
-| `sqlConnectionTracker.setProxyConnection()` | ✅ Implemented | Track proxy connections |
-| `connectSqlProxy` command | ✅ Implemented | UI for proxy connection |
-| `executeProxyCell()` | ✅ Implemented | Cell execution via proxy |
+| `MssqlProxyKernel` (.NET) | ✅ Implemented | Proxy kernel for language services |
+| `ConnectMssqlProxyDirective` (.NET) | ✅ Implemented | `#!connect mssql-proxy` directive |
+| `sqlConnectionTracker.ts` | ✅ Implemented | Track connection URIs per kernel |
+| `languageProvider.ts` | ✅ Implemented | Route completions to MSSQL extension |
+| `executeProxyCell()` | ✅ Implemented | Cell execution via MSSQL extension |
+| `isMssqlProxyKernel()` | ✅ Implemented | Helper to identify mssql-* kernels |
 
-## Limitations (POC vs ADS Parity)
+## Limitations (Current vs ADS Parity)
 
 ### Current Limitations
 
-| Feature | POC Status | ADS Behavior | Path to Parity |
-|---------|------------|--------------|----------------|
+| Feature | Current Status | ADS Behavior | Path to Parity |
+|---------|----------------|--------------|----------------|
 | Single result set | ⚠️ First only | Multiple supported | Use `query/execute` API |
 | Large results | ⚠️ All in memory | Streaming/paging | Add subset fetching |
 | Query cancellation | ❌ Not supported | Supported | Add `cancelQuery` API |
 | Progress messages | ❌ Not captured | PRINT shown | Add message handler |
-| Intellisense | ❌ Not available | Full support | Add `getCompletions` API |
+| Intellisense | ✅ Implemented | Full support | Done |
 | Query timeout | ⚠️ 30s default | Configurable | Add timeout parameter |
 | Multiple batches | ❌ Not supported | GO separator | Parse and execute batches |
 
@@ -88,6 +127,10 @@ This document describes the MSSQL Kernel Provider approach for secure SQL execut
 - ✅ Azure AD authentication (handled by MSSQL)
 - ✅ SQL Server authentication
 - ✅ Connection pooling (via STS)
+- ✅ IntelliSense completions (schema-aware)
+- ✅ Per-cell kernel selection
+- ✅ Connection ID persistence in notebook metadata
+- ✅ Auto-reconnect on cell execution
 
 ## Future Enhancements
 
@@ -140,30 +183,41 @@ getCompletions(connectionUri: string, query: string, position: number): Promise<
 ### MSSQL Extension (`vscode-mssql`)
 
 - `typings/vscode-mssql.d.ts` - Added `IConnectionKernelInfo` interface and `getAvailableKernels` signature
-- `src/connectionSharing/connectionSharingService.ts` - Implemented `getAvailableKernels()` method
+- `src/connectionSharing/connectionSharingService.ts` - Implemented `getAvailableKernels()` and `getCompletions()` methods
 - `test/unit/connectionSharingService.test.ts` - Added unit tests
 
-### Polyglot Notebooks (`interactive`)
+### Polyglot Notebooks (`interactive`) - .NET
 
-- `src/polyglot-notebooks-vscode-common/src/mssqlConnectionService.ts` - Added `getAvailableKernels()` and `executeQueryOnKernel()`
-- `src/polyglot-notebooks-vscode-common/src/sqlConnectionTracker.ts` - Added proxy connection tracking
-- `src/polyglot-notebooks-vscode-common/src/commands.ts` - Added `connectSqlProxy` and `executeSqlViaProxy` commands
-- `src/polyglot-notebooks-vscode-common/src/notebookControllers.ts` - Added `executeProxyCell()` for proxy execution
-- `src/polyglot-notebooks-vscode/package.json` - Registered new commands
+- `src/Microsoft.DotNet.Interactive/MssqlProxyKernel.cs` - Proxy kernel for language services
+- `src/Microsoft.DotNet.Interactive/ConnectMssqlProxyDirective.cs` - `#!connect mssql-proxy` directive with `KernelNamePrefix` constant and `IsMssqlProxyKernel()` helper
+- `src/Microsoft.DotNet.Interactive.Tests/MssqlProxyKernelTests.cs` - Unit tests
+- `src/Microsoft.DotNet.Interactive.Documents.Tests/KernelInfoConnectionIdTests.cs` - Tests for connectionId serialization
+
+### Polyglot Notebooks (`interactive`) - TypeScript
+
+- `src/polyglot-notebooks-vscode-common/src/metadataUtilities.ts` - Added `MSSQL_PROXY_KERNEL_PREFIX` constant and `isMssqlProxyKernel()` helper
+- `src/polyglot-notebooks-vscode-common/src/sqlConnectionTracker.ts` - Track connection URIs per mssql-* kernel
+- `src/polyglot-notebooks-vscode-common/src/languageProvider.ts` - Route completions to MSSQL extension for mssql-* kernels
+- `src/polyglot-notebooks-vscode-common/src/commands.ts` - MSSQL Extension connection UI, filter mssql-* from recent kernels
+- `src/polyglot-notebooks-vscode-common/src/notebookControllers.ts` - `executeProxyCell()` for mssql-* kernel execution
 
 ## Testing
 
 ### Manual Testing
 
-1. Install both VSIX packages
-2. Open a SQL notebook
-3. Run "Connect SQL (Proxy Mode - Secure)" command
-4. Select a saved connection
-5. Execute SQL cells - results display as HTML tables
+1. Install both VSIX packages (Polyglot Notebooks + MSSQL)
+2. Open a Polyglot Notebook (.dib or .ipynb)
+3. Click the cell kernel selector → "Connect to new cell kernel"
+4. Select "MSSQL Extension" from the Data kernels section
+5. Choose a saved connection from the MSSQL extension
+6. Execute SQL cells - results display as HTML tables
+7. Verify IntelliSense shows schema-aware completions (tables, columns)
 
 ### Unit Tests
 
-- `connectionSharingService.test.ts` - Tests for `getAvailableKernels()`
+- `MssqlProxyKernelTests.cs` - Tests for proxy kernel registration and language service handlers
+- `KernelInfoConnectionIdTests.cs` - Tests for connectionId serialization in DIB/IPYNB formats
+- `connectionSharingService.test.ts` - Tests for `getAvailableKernels()` and `getCompletions()`
 
 ## Branch Information
 
@@ -172,13 +226,22 @@ getCompletions(connectionUri: string, query: string, position: number): Promise<
 | vscode-mssql | `feature/mssql-kernel-provider` | MSSQL API additions |
 | interactive | `feature/mssql-kernel-provider` | Polyglot proxy kernel |
 
+## Completed
+
+- [x] Cell-level SQL kernel selection with `mssql-*` prefix
+- [x] IntelliSense completions via MSSQL extension
+- [x] Connection ID persistence in notebook metadata
+- [x] Auto-reconnect on cell execution
+- [x] Filter `mssql-*` from recent kernels list
+- [x] Remove base `sql` kernel handling
+- [x] Helper functions for kernel identification
+
 ## Next Steps
 
-1. [ ] Test POC end-to-end
-2. [ ] Discuss with Polyglot team
-3. [ ] Plan Phase 1 implementation
-4. [ ] Add comprehensive tests
-5. [ ] Update documentation
+1. [ ] Add query cancellation support
+2. [ ] Add multiple result set support
+3. [ ] Add progress/message handling
+4. [ ] Implement SlickGrid-based table renderer
 
 ## Future: SlickGrid-Based Table Renderer
 
