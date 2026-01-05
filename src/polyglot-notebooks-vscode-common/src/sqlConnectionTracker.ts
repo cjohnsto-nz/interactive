@@ -1,16 +1,8 @@
 // Copyright (c) .NET Foundation and contributors. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-// Track SQL connections per notebook (connected state)
-interface SqlConnectionInfo {
-    connectionName: string;
-    kernelName: string;
-    // Proxy mode: use MSSQL extension for execution instead of .NET kernel
-    proxyMode?: boolean;
-    connectionId?: string;
-    connectionUri?: string; // MSSQL connection URI for proxy execution
-}
-const notebookSqlConnections = new Map<string, SqlConnectionInfo>();
+// Track SQL connections per cell-level kernel (sql-* kernels only)
+// Notebook-level SQL connections have been removed - all SQL kernels are now explicit cell-level kernels.
 
 // Track connection URIs by connection ID (GUID) - shared across all notebooks
 const connectionUrisByConnectionId = new Map<string, string>();
@@ -19,48 +11,15 @@ const connectionUrisByConnectionId = new Map<string, string>();
 // Key: kernelName (e.g., "sql-AllianceProd"), Value: connectionId (GUID)
 const kernelToConnectionId = new Map<string, string>();
 
-// Track saved connection info per notebook (not yet connected)
-interface SavedConnectionInfo {
-    connectionName: string;
-    connectionId?: string;
-}
-const notebookSavedConnections = new Map<string, SavedConnectionInfo>();
+// Track pending connection promises to prevent race conditions
+// Key: kernelName, Value: Promise that resolves to connectionUri
+const pendingConnections = new Map<string, Promise<string | undefined>>();
 
-export function setConnection(notebookUri: string, connectionName: string, kernelName: string): void {
-    notebookSqlConnections.set(notebookUri, { connectionName, kernelName, proxyMode: false });
-    // Clear saved connection since we're now connected
-    notebookSavedConnections.delete(notebookUri);
-}
-
-export function setProxyConnection(notebookUri: string, connectionName: string, connectionId: string, connectionUri: string): void {
-    const kernelName = connectionName.replace(/[^a-zA-Z0-9_]/g, '_');
-    const fullKernelName = `sql-${kernelName}`;
-    
-    notebookSqlConnections.set(notebookUri, { 
-        connectionName, 
-        kernelName,
-        proxyMode: true,
-        connectionId,
-        connectionUri
-    });
-    // Track connection URI by connection ID (GUID) for per-cell kernel selection
-    connectionUrisByConnectionId.set(connectionId, connectionUri);
-    // Track kernel name to connection ID mapping
-    kernelToConnectionId.set(fullKernelName, connectionId);
-    
-    // Clear saved connection since we're now connected
-    notebookSavedConnections.delete(notebookUri);
-}
-
-export function isProxyConnection(notebookUri: string): boolean {
-    return notebookSqlConnections.get(notebookUri)?.proxyMode === true;
-}
-
-export function getProxyConnectionUri(notebookUri: string): string | undefined {
-    const conn = notebookSqlConnections.get(notebookUri);
-    return conn?.proxyMode ? conn.connectionUri : undefined;
-}
-
+/**
+ * Get the cached connection URI for a cell-level SQL kernel (sql-* kernel).
+ * @param kernelName The kernel name (e.g., "sql-MyConnection")
+ * @returns The cached connection URI, or undefined if not cached
+ */
 export function getProxyConnectionUriForKernel(kernelName: string): string | undefined {
     const connectionId = kernelToConnectionId.get(kernelName);
     if (connectionId) {
@@ -69,32 +28,61 @@ export function getProxyConnectionUriForKernel(kernelName: string): string | und
     return undefined;
 }
 
+/**
+ * Cache the connection for a cell-level SQL kernel.
+ * @param kernelName The kernel name (e.g., "sql-MyConnection")
+ * @param connectionId The MSSQL connection ID (GUID from mssql settings)
+ * @param connectionUri The MSSQL connection URI (returned from mssql.connectionSharing.connect)
+ */
 export function setKernelConnection(kernelName: string, connectionId: string, connectionUri: string): void {
     kernelToConnectionId.set(kernelName, connectionId);
     connectionUrisByConnectionId.set(connectionId, connectionUri);
 }
 
-export function setSavedConnection(notebookUri: string, connectionName: string, connectionId?: string): void {
-    notebookSavedConnections.set(notebookUri, { connectionName, connectionId });
+/**
+ * Get the connection ID for a kernel name.
+ * @param kernelName The kernel name (e.g., "sql-MyConnection")
+ * @returns The connection ID (GUID), or undefined if not found
+ */
+export function getConnectionIdForKernel(kernelName: string): string | undefined {
+    return kernelToConnectionId.get(kernelName);
 }
 
-export function getSavedConnection(notebookUri: string): string | undefined {
-    return notebookSavedConnections.get(notebookUri)?.connectionName;
+/**
+ * Clear the cached connection for a kernel.
+ * @param kernelName The kernel name to clear
+ */
+export function clearKernelConnection(kernelName: string): void {
+    const connectionId = kernelToConnectionId.get(kernelName);
+    if (connectionId) {
+        kernelToConnectionId.delete(kernelName);
+        // Don't delete from connectionUrisByConnectionId - other kernels might use the same connection
+    }
+    pendingConnections.delete(kernelName);
 }
 
-export function getSavedConnectionId(notebookUri: string): string | undefined {
-    return notebookSavedConnections.get(notebookUri)?.connectionId;
+/**
+ * Get a pending connection promise for a kernel, if one exists.
+ * @param kernelName The kernel name
+ * @returns The pending promise, or undefined if no connection is in progress
+ */
+export function getPendingConnection(kernelName: string): Promise<string | undefined> | undefined {
+    return pendingConnections.get(kernelName);
 }
 
-export function getConnection(notebookUri: string): { connectionName: string, kernelName: string } | undefined {
-    return notebookSqlConnections.get(notebookUri);
+/**
+ * Set a pending connection promise for a kernel.
+ * @param kernelName The kernel name
+ * @param promise The promise that will resolve to the connectionUri
+ */
+export function setPendingConnection(kernelName: string, promise: Promise<string | undefined>): void {
+    pendingConnections.set(kernelName, promise);
 }
 
-export function getConnectedSqlKernelName(notebookUri: string): string | undefined {
-    const connection = notebookSqlConnections.get(notebookUri);
-    return connection ? `sql-${connection.kernelName}` : undefined;
-}
-
-export function clearConnection(notebookUri: string): void {
-    notebookSqlConnections.delete(notebookUri);
+/**
+ * Clear a pending connection promise for a kernel.
+ * @param kernelName The kernel name
+ */
+export function clearPendingConnection(kernelName: string): void {
+    pendingConnections.delete(kernelName);
 }
