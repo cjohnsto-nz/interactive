@@ -23,5 +23,7 @@
       "path": "../vscode-mssql"
     }
   ],
-  "settings": {}
+  "settings": {
+    "dotnet-interactive.requiredInteractiveToolVersion": "1.0.0-dev"
+  }
 }
