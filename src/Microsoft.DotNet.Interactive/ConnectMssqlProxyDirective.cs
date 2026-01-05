@@ -19,12 +19,6 @@ public class ConnectMssqlProxyDirective : ConnectKernelDirective<ConnectMssqlPro
     public ConnectMssqlProxyDirective()
         : base("mssql-proxy", "Registers an MSSQL proxy kernel for language service support")
     {
-        Console.WriteLine($"[MssqlProxy] ConnectMssqlProxyDirective constructor called");
-        Console.WriteLine($"[MssqlProxy] Parameters count: {Parameters.Count}");
-        foreach (var p in Parameters)
-        {
-            Console.WriteLine($"[MssqlProxy] Parameter: {p.Name}");
-        }
     }
 
     public override Task<IEnumerable<Kernel>> ConnectKernelsAsync(
@@ -33,20 +27,15 @@ public class ConnectMssqlProxyDirective : ConnectKernelDirective<ConnectMssqlPro
     {
         var kernelName = connectCommand.ConnectedKernelName;
         
-        Console.WriteLine($"[MssqlProxy] ConnectMssqlProxyDirective: registering {kernelName}");
-
         // Check if kernel already exists
         var existingKernel = context.HandlingKernel?.RootKernel.FindKernelByName(kernelName);
         if (existingKernel is MssqlProxyKernel)
         {
-            Console.WriteLine($"[MssqlProxy] Kernel {kernelName} already exists as MssqlProxyKernel");
             return Task.FromResult<IEnumerable<Kernel>>(Array.Empty<Kernel>());
         }
 
         // Create the proxy kernel
         var proxyKernel = new MssqlProxyKernel(kernelName);
-        
-        Console.WriteLine($"[MssqlProxy] Kernel {kernelName} created successfully");
 
         return Task.FromResult<IEnumerable<Kernel>>(new[] { proxyKernel });
     }

@@ -75,13 +75,10 @@ public class MssqlProxyKernel : Kernel,
     /// </summary>
     public static void RegisterProxyKernel(CompositeKernel compositeKernel, string kernelName, string displayName = null)
     {
-        Console.WriteLine($"[MssqlProxyKernel] RegisterProxyKernel called: {kernelName}");
-        
         // Check if kernel already exists
         var existingKernel = compositeKernel.ChildKernels.FirstOrDefault(k => k.Name == kernelName);
         if (existingKernel is MssqlProxyKernel)
         {
-            Console.WriteLine($"[MssqlProxyKernel] Kernel {kernelName} already exists as MssqlProxyKernel");
             return;
         }
 
@@ -96,7 +93,5 @@ public class MssqlProxyKernel : Kernel,
 
         // Add to composite kernel
         compositeKernel.Add(proxyKernel);
-        
-        Console.WriteLine($"[MssqlProxyKernel] Kernel {kernelName} registered successfully");
     }
 }
