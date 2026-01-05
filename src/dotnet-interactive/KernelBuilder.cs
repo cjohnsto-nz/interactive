@@ -85,6 +85,7 @@ public static class KernelBuilder
 
         kernel.AddConnectDirective(new ConnectSignalRDirective());
         kernel.AddConnectDirective(new ConnectStdIoDirective(startupOptions.KernelHostUri));
+        kernel.AddConnectDirective(new ConnectMssqlProxyDirective());
 
         kernel.AddConnectDirective(
             new ConnectJupyterKernelDirective()
