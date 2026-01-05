@@ -90,7 +90,7 @@ export function isMssqlProxyKernel(kernelName: string | undefined): boolean {
 |-----|--------|-------------|
 | `getAvailableKernels(extensionId)` | ✅ Implemented | Returns list of saved connections as kernel metadata |
 | `connect(extensionId, connectionId)` | ✅ Implemented | Establishes connection, returns connectionUri |
-| `executeSimpleQuery(connectionUri, query)` | ✅ Implemented | Executes query, returns all results |
+| `executeSimpleQuery(connectionUri, query)` | ✅ Existing | Executes query, returns all results |
 | `getCompletions(connectionUri, text, line, column)` | ✅ Implemented | Returns IntelliSense completions |
 | `disconnect(connectionUri)` | ✅ Implemented | Closes connection |
 
@@ -157,26 +157,12 @@ getQuerySubset(connectionUri: string, batchIndex: number, resultSetIndex: number
 cancelQuery(connectionUri: string): Promise<void>;
 ```
 
-### Phase 2: Intellisense Support
 
-```typescript
-interface ICompletionItem {
-    label: string;
-    kind: CompletionItemKind;
-    detail?: string;
-    insertText?: string;
-}
+### Phase 2: Enhanced Features
 
-// New API
-getCompletions(connectionUri: string, query: string, position: number): Promise<ICompletionItem[]>;
-```
-
-### Phase 3: Enhanced Features
-
-- Execution plans (estimated and actual)
-- Query history
 - Result set export
 - Parameter binding
+- SlickGrid or similar interactive grid
 
 ## Files Changed
 
