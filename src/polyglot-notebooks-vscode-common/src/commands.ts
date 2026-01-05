@@ -171,6 +171,18 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             if (selectedOption.isMssqlExtension) {
                 // Open MSSQL extension connection picker for cell-level kernel
                 await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxyForCell');
+            } else if (selectedOption.label?.startsWith('sql-')) {
+                // For sql-* proxy kernels, set the cell's kernel directly instead of inserting directive
+                const selection = vscode.window.activeNotebookEditor?.selection;
+                if (selection) {
+                    const cell = notebook.cellAt(selection.start);
+                    const codeCell = await vscodeUtilities.ensureCellIsCodeCell(cell);
+                    const notebookCellMetadata = metadataUtilities.getNotebookCellMetadataFromNotebookCellElement(cell);
+                    notebookCellMetadata.kernelName = selectedOption.label;
+                    const newRawMetadata = metadataUtilities.getRawNotebookCellMetadataFromNotebookCellMetadata(notebookCellMetadata);
+                    const mergedMetadata = metadataUtilities.mergeRawMetadata(cell.metadata, newRawMetadata);
+                    await vscodeNotebookManagement.updateNotebookCellMetadata(codeCell.notebook.uri, codeCell.index, mergedMetadata);
+                }
             } else {
                 const selection = vscode.window.activeNotebookEditor?.selection;
 
