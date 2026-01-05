@@ -349,6 +349,7 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                     }
                     
                     // Step 5: Update metadata to ensure proxyMode is set and kernel has connectionId
+                    const isIpynb = metadataUtilities.isIpynbNotebook(notebook);
                     let updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
                         notebook.metadata,
                         { 
@@ -356,7 +357,8 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                             connectionName: kernel.name, 
                             connectionProfileName: kernel.name,
                             proxyMode: true
-                        }
+                        },
+                        isIpynb
                     );
                     
                     // Step 6: Store connectionId in the kernel's metadata for persistence
@@ -678,7 +680,8 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                             connectionName: selected.kernel.name, 
                             connectionProfileName: selected.kernel.name,
                             proxyMode: true
-                        }
+                        },
+                        metadataUtilities.isIpynbNotebook(notebook)
                     );
                     await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
                     

@@ -135,16 +135,17 @@ export function createSqlConnectionMetadata(connectionId: string | undefined, co
 
 export function mergeSqlConnectionMetadataIntoNotebookMetadata(
     existingMetadata: { [key: string]: any },
-    sqlConnectionMetadata: SqlConnectionMetadata
+    sqlConnectionMetadata: SqlConnectionMetadata,
+    isIpynb: boolean
 ): { [key: string]: any } {
     const result = { ...existingMetadata };
     
-    // For ipynb files, metadata is nested under 'metadata'
-    if (result.metadata) {
+    if (isIpynb) {
+        // For ipynb files, metadata is nested under 'metadata'
         result.metadata = {
-            ...result.metadata,
+            ...(result.metadata || {}),
             polyglot_notebook: {
-                ...(result.metadata.polyglot_notebook || {}),
+                ...(result.metadata?.polyglot_notebook || {}),
                 sqlConnection: sqlConnectionMetadata
             }
         };

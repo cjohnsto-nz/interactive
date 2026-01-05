@@ -36,7 +36,22 @@ async function deserializeNotebookByType(parserServer: NotebookParserServer, ser
     const interactiveDocument = await parserServer.parseInteractiveDocument(serializationType, rawData);
     const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromInteractiveDocument(interactiveDocument);
     const createForIpynb = serializationType === commandsAndEvents.DocumentSerializationType.Ipynb;
-    const rawNotebookDocumentMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(notebookMetadata, {}, createForIpynb);
+    let rawNotebookDocumentMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(notebookMetadata, {}, createForIpynb);
+    
+    // For DIB files, restore additional metadata like sqlConnection
+    if (!createForIpynb && interactiveDocument.metadata) {
+        const docMetadata = interactiveDocument.metadata as any;
+        if (docMetadata.sqlConnection) {
+            rawNotebookDocumentMetadata = {
+                ...rawNotebookDocumentMetadata,
+                polyglot_notebook: {
+                    ...(rawNotebookDocumentMetadata.polyglot_notebook || {}),
+                    sqlConnection: docMetadata.sqlConnection
+                }
+            };
+        }
+    }
+    
     const notebookData: vscode.NotebookData = {
         cells: interactiveDocument.elements.map(element => toVsCodeNotebookCellData(element)),
         metadata: rawNotebookDocumentMetadata
@@ -54,9 +69,20 @@ async function serializeNotebookByType(parserServer: NotebookParserServer, seria
         metadata: data.metadata ?? {}
     };
     const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(fakeNotebookDocument);
+    
+    // For DIB files, preserve additional metadata like sqlConnection
+    const rawMetadata = data.metadata ?? {};
+    const additionalMetadata: { [key: string]: any } = {};
+    if (rawMetadata.polyglot_notebook?.sqlConnection) {
+        additionalMetadata.sqlConnection = rawMetadata.polyglot_notebook.sqlConnection;
+    }
+    
     const interactiveDocument: commandsAndEvents.InteractiveDocument = {
         elements: data.cells.map(toInteractiveDocumentElement),
-        metadata: notebookMetadata
+        metadata: {
+            ...notebookMetadata,
+            ...additionalMetadata
+        }
     };
     const rawData = await parserServer.serializeNotebook(serializationType, eol, interactiveDocument);
     return rawData;
