@@ -24,52 +24,8 @@ import * as sqlConnectionTracker from './sqlConnectionTracker';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
 import * as commandsAndEvents from './polyglot-notebooks/commandsAndEvents';
 
-let sqlConnectionStatusBar: vscode.StatusBarItem | undefined;
-
-export function updateSqlConnectionStatusBar() {
-    const notebook = getCurrentNotebookDocument();
-    if (!notebook) {
-        if (sqlConnectionStatusBar) {
-            sqlConnectionStatusBar.hide();
-        }
-        vscode.commands.executeCommand('setContext', 'polyglotNotebook.isSqlNotebook', false);
-        vscode.commands.executeCommand('setContext', 'polyglotNotebook.hasConnectionDefined', false);
-        return;
-    }
-
-    // Check if this is a SQL notebook (legacy ADS or Polyglot with SQL default)
-    const isSqlNotebook = metadataUtilities.isSqlNotebook(notebook);
-    vscode.commands.executeCommand('setContext', 'polyglotNotebook.isSqlNotebook', isSqlNotebook);
-
-    // Check if notebook has a connection defined in metadata
-    const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebook);
-    const hasConnectionDefined = !!sqlMetadata?.connectionId;
-    vscode.commands.executeCommand('setContext', 'polyglotNotebook.hasConnectionDefined', hasConnectionDefined);
-
-    if (!sqlConnectionStatusBar) {
-        sqlConnectionStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    }
-
-    if (hasConnectionDefined) {
-        // Has connection defined - show connection name, click to change
-        const connectionName = sqlMetadata?.connectionName || 'MSSQL Connection';
-        sqlConnectionStatusBar.text = `$(database) ${connectionName}`;
-        sqlConnectionStatusBar.tooltip = `MSSQL Proxy: ${connectionName}\nClick to change connection`;
-        sqlConnectionStatusBar.backgroundColor = undefined;
-        sqlConnectionStatusBar.command = 'polyglot-notebook.changeSqlConnection';
-        sqlConnectionStatusBar.show();
-    } else if (isSqlNotebook) {
-        // SQL notebook but no connection - show "Connect to MSSQL"
-        sqlConnectionStatusBar.text = `$(database) Connect to MSSQL`;
-        sqlConnectionStatusBar.tooltip = 'Click to connect to MSSQL database';
-        sqlConnectionStatusBar.backgroundColor = undefined;
-        sqlConnectionStatusBar.command = 'polyglot-notebook.connectSqlProxy';
-        sqlConnectionStatusBar.show();
-    } else {
-        // Not a SQL notebook - hide status bar
-        sqlConnectionStatusBar.hide();
-    }
-}
+// Note: Notebook-level SQL connection status bar has been removed.
+// SQL connections are now managed per-cell via explicit sql-* kernels.
 
 export async function registerAcquisitionCommands(context: vscode.ExtensionContext, diagnosticChannel: ReportChannel): Promise<void> {
     const dotnetConfig = vscode.workspace.getConfiguration(constants.DotnetConfigurationSectionName);
@@ -161,11 +117,6 @@ function getCurrentNotebookDocument(): vscode.NotebookDocument | undefined {
 }
 
 export function registerKernelCommands(context: vscode.ExtensionContext, clientMapper: ClientMapper) {
-
-    // Update status bar when active notebook changes
-    context.subscriptions.push(vscode.window.onDidChangeActiveNotebookEditor(() => {
-        updateSqlConnectionStatusBar();
-    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.notebookEditor.restartKernel', async (_notebookEditor) => {
         await vscode.commands.executeCommand('polyglot-notebook.restartCurrentNotebookKernel');
@@ -282,116 +233,7 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             .forEach(async document => await vscode.commands.executeCommand('polyglot-notebook.stopCurrentNotebookKernel', document));
     }));
 
-    // Register Connect (to saved connection) command - reconnects using proxy mode
-    // Happy path: Read connectionId from metadata -> getAvailableKernels() -> connect()
-    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSavedSql', async () => {
-        const notebook = getCurrentNotebookDocument();
-        if (!notebook) {
-            return;
-        }
-
-        const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebook);
-        
-        if (!sqlMetadata.connectionId) {
-            // No saved connection - open picker
-            await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
-            return;
-        }
-
-        // Step 1: Get available kernels (this activates MSSQL extension and registers commands)
-        const mssqlService = getMssqlConnectionService();
-        const kernels = await mssqlService.getAvailableKernels();
-        const kernel = kernels.find(k => k.id === sqlMetadata.connectionId);
-        
-        if (!kernel) {
-            vscode.window.showWarningMessage(`Connection "${sqlMetadata.connectionName}" not found. Please select a new connection.`);
-            await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
-            return;
-        }
-        
-        // Step 2: Connect via MSSQL
-        try {
-            await vscode.window.withProgress(
-                { location: vscode.ProgressLocation.Notification, title: 'Connecting SQL', cancellable: false },
-                async (progress) => {
-                    progress.report({ message: `Connecting to ${kernel.name}...` });
-                    
-                    const connectionUri = await vscode.commands.executeCommand<string>(
-                        'mssql.connectionSharing.connect',
-                        'ms-dotnetinteractive.polyglot-notebooks',
-                        kernel.id
-                    );
-                    
-                    if (!connectionUri) {
-                        throw new Error('Failed to connect to database');
-                    }
-                    
-                    // Step 3: Store connection state
-                    const kernelName = `sql-${kernel.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                    sqlConnectionTracker.setProxyConnection(notebook.uri.toString(), kernel.name, kernel.id, connectionUri);
-                    
-                    // Step 4: Register the proxy kernel with the .NET kernel via #!connect mssql-proxy
-                    // Send directly to .NET process via channel - events flow back through channel receiver
-                    // which has the KernelInfoProduced handler that updates the kernel selector
-                    try {
-                        const client = await clientMapper.getOrAddClient(notebook.uri);
-                        const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
-                        const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
-                            commandsAndEvents.SubmitCodeType,
-                            {
-                                code: code,
-                                targetKernelName: '.NET'  // Send to composite kernel
-                            } as commandsAndEvents.SubmitCode
-                        );
-                        await client.channel.sender.send(submitCommand);
-                    } catch (e: any) {
-                        // Proxy kernel registration failed - continue anyway
-                    }
-                    
-                    // Step 5: Update metadata to ensure proxyMode is set and kernel has connectionId
-                    const isIpynb = metadataUtilities.isIpynbNotebook(notebook);
-                    let updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
-                        notebook.metadata,
-                        { 
-                            connectionId: kernel.id, 
-                            connectionName: kernel.name, 
-                            connectionProfileName: kernel.name,
-                            proxyMode: true
-                        },
-                        isIpynb
-                    );
-                    
-                    // Step 6: Store connectionId in the kernel's metadata for persistence
-                    const notebookDocMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(notebook);
-                    const updatedKernelMetadata = metadataUtilities.setKernelConnectionId(notebookDocMetadata, kernelName, kernel.id);
-                    updatedMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(
-                        updatedKernelMetadata, 
-                        updatedMetadata, 
-                        metadataUtilities.isIpynbNotebook(notebook)
-                    );
-                    
-                    await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
-                    
-                    updateSqlConnectionStatusBar();
-                    vscode.window.showInformationMessage(`SQL connected: ${kernel.name}`);
-                }
-            );
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Connection failed: ${error?.message || error}`);
-        }
-    }));
-
-    // Register Change Connection command - opens picker
-    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.changeSqlConnection', async () => {
-        await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
-    }));
-
-    // Register MSSQL connection command - redirects to proxy picker
-    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectMssql', async () => {
-        await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
-    }));
-
-    // Register cell-level SQL proxy connection (doesn't change notebook-level connection)
+    // Register cell-level SQL proxy connection
     context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSqlProxyForCell', async () => {
         const notebook = getCurrentNotebookDocument();
         if (!notebook) {
@@ -461,19 +303,14 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                     
                     // Store connectionId in kernel metadata for persistence (but not notebook-level)
                     const notebookDocMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(notebook);
-                    console.log(`[connectSqlProxyForCell] Before setKernelConnectionId - kernelName: ${kernelName}, connectionId: ${kernel.id}`);
-                    console.log(`[connectSqlProxyForCell] Current items:`, notebookDocMetadata.kernelInfo.items.map(i => ({ name: i.name, connectionId: i.connectionId })));
                     const updatedKernelMetadata = metadataUtilities.setKernelConnectionId(notebookDocMetadata, kernelName, kernel.id);
-                    console.log(`[connectSqlProxyForCell] After setKernelConnectionId - items:`, updatedKernelMetadata.kernelInfo.items.map(i => ({ name: i.name, connectionId: i.connectionId })));
                     const updatedMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(
                         updatedKernelMetadata, 
                         notebook.metadata, 
                         metadataUtilities.isIpynbNotebook(notebook)
                     );
-                    console.log(`[connectSqlProxyForCell] Raw metadata to save:`, JSON.stringify(updatedMetadata.polyglot_notebook?.kernelInfo?.items?.find((i: any) => i.name === kernelName)));
                     
                     await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
-                    console.log(`[connectSqlProxyForCell] Metadata updated`);
                     
                     // Set the current cell to use this kernel
                     const selection = vscode.window.activeNotebookEditor?.selection;
@@ -586,115 +423,6 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                     } catch (error: any) {
                         vscode.window.showErrorMessage(`Query failed: ${error?.message || error}`);
                     }
-                }
-            );
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Error: ${error?.message || error}`);
-        }
-    }));
-
-    // Connect to SQL via MSSQL proxy (no credentials exposed to Polyglot)
-    context.subscriptions.push(vscode.commands.registerCommand('polyglot-notebook.connectSqlProxy', async () => {
-        const notebook = getCurrentNotebookDocument();
-        if (!notebook) {
-            vscode.window.showWarningMessage('Please open a notebook first.');
-            return;
-        }
-
-        const mssqlService = getMssqlConnectionService();
-        
-        try {
-            // Get available kernels from MSSQL
-            const kernels = await mssqlService.getAvailableKernels();
-            if (kernels.length === 0) {
-                vscode.window.showWarningMessage('No saved SQL connections found in MSSQL extension.');
-                return;
-            }
-
-            // Let user pick a kernel
-            const items = kernels.map(k => ({
-                label: k.name,
-                description: `${k.server} / ${k.database}`,
-                detail: `Auth: ${k.authenticationType}${k.userName ? ` (${k.userName})` : ''}`,
-                kernel: k
-            }));
-
-            const selected = await vscode.window.showQuickPick(items, {
-                placeHolder: 'Select a SQL connection to use',
-                title: 'Connect SQL (Proxy Mode - Secure)'
-            });
-
-            if (!selected) {
-                return;
-            }
-
-            await vscode.window.withProgress(
-                {
-                    location: vscode.ProgressLocation.Notification,
-                    title: 'Connecting SQL (Proxy Mode)',
-                    cancellable: false
-                },
-                async (progress) => {
-                    progress.report({ message: `Connecting to ${selected.kernel.name}...` });
-                    
-                    const extensionId = 'ms-dotnetinteractive.polyglot-notebooks';
-                    
-                    // Connect via MSSQL to get a connectionUri
-                    const connectionUri = await vscode.commands.executeCommand<string>(
-                        'mssql.connectionSharing.connect',
-                        extensionId,
-                        selected.kernel.id
-                    );
-                    
-                    if (!connectionUri) {
-                        throw new Error('Failed to connect to database');
-                    }
-                    
-                    // Store as proxy connection in memory
-                    const kernelName = `sql-${selected.kernel.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                    sqlConnectionTracker.setProxyConnection(
-                        notebook.uri.toString(),
-                        selected.kernel.name,
-                        selected.kernel.id,
-                        connectionUri
-                    );
-                    
-                    // Register the proxy kernel with the .NET kernel via #!connect mssql-proxy
-                    // Send directly to .NET process via channel - events flow back through channel receiver
-                    // which has the KernelInfoProduced handler that updates the kernel selector
-                    try {
-                        const client = await clientMapper.getOrAddClient(notebook.uri);
-                        const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
-                        const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
-                            commandsAndEvents.SubmitCodeType,
-                            {
-                                code: code,
-                                targetKernelName: '.NET'  // Send to composite kernel
-                            } as commandsAndEvents.SubmitCode
-                        );
-                        await client.channel.sender.send(submitCommand);
-                    } catch (e: any) {
-                        // Proxy kernel registration failed - continue anyway
-                    }
-                    
-                    // Save to notebook metadata for persistence
-                    const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
-                        notebook.metadata,
-                        { 
-                            connectionId: selected.kernel.id, 
-                            connectionName: selected.kernel.name, 
-                            connectionProfileName: selected.kernel.name,
-                            proxyMode: true
-                        },
-                        metadataUtilities.isIpynbNotebook(notebook)
-                    );
-                    await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
-                    
-                    updateSqlConnectionStatusBar();
-                    
-                    vscode.window.showInformationMessage(
-                        `SQL Proxy connected: ${selected.kernel.name}. SQL cells will execute via MSSQL extension.`
-                    );
                 }
             );
         } catch (error: any) {
@@ -930,9 +658,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, parserSer
         const finalMetadata = metadataUtilities.mergeRawMetadata(existingRawMetadata, updatedRawMetadata);
 
         await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, finalMetadata);
-
-        // Update the SQL notebook context for toolbar visibility
-        updateSqlConnectionStatusBar();
 
         vscode.window.showInformationMessage(`Notebook default language changed to ${selected.label}.`);
     }));
