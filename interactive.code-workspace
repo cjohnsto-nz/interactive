@@ -18,6 +18,9 @@
     },
     {
       "path": "src/polyglot-notebooks-vscode-insiders"
+    },
+    {
+      "path": "../vscode-mssql"
     }
   ],
   "settings": {}

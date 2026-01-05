@@ -25,7 +25,12 @@ function convertToPosition(linePosition: LinePosition): vscode.Position {
 }
 
 export function convertToRange(linePositionSpan?: LinePositionSpan): (vscode.Range | undefined) {
-    if (linePositionSpan === undefined) {
+    if (linePositionSpan === undefined || linePositionSpan === null) {
+        return undefined;
+    }
+    
+    // Handle case where start or end is null/undefined
+    if (!linePositionSpan.start || !linePositionSpan.end) {
         return undefined;
     }
 

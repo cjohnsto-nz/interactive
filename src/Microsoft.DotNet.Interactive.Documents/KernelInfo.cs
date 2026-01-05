@@ -13,11 +13,13 @@ public class KernelInfo
     public KernelInfo(
         string name,
         string? languageName = null,
-        IReadOnlyCollection<string>? aliases = null)
+        IReadOnlyCollection<string>? aliases = null,
+        string? connectionId = null)
     {
         Validate(name);
         Name = name;
         LanguageName = languageName;
+        ConnectionId = connectionId;
 
         if (aliases is not null)
         {
@@ -39,6 +41,8 @@ public class KernelInfo
     public string? LanguageName { get; }
 
     public IReadOnlyCollection<string> Aliases { get; }
+    
+    public string? ConnectionId { get; }
 
     public override string ToString()
     {

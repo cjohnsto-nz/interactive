@@ -19,6 +19,7 @@ internal class KernelInfoConverter : JsonConverter<KernelInfo>
         string? name = null;
         string? languageName = null;
         string[]? aliases = null;
+        string? connectionId = null;
 
         while (reader.Read())
         {
@@ -35,6 +36,9 @@ internal class KernelInfoConverter : JsonConverter<KernelInfo>
                     case "aliases":
                         aliases = reader.ReadArray<string>(options);
                         break;
+                    case "connectionId":
+                        connectionId = reader.ReadString();
+                        break;
 
                     default:
                         reader.Skip();
@@ -47,7 +51,7 @@ internal class KernelInfoConverter : JsonConverter<KernelInfo>
             }
         }
 
-        return new(name!, languageName, aliases);
+        return new(name!, languageName, aliases, connectionId);
     }
 
     public override void Write(Utf8JsonWriter writer, KernelInfo value, JsonSerializerOptions options)
@@ -74,6 +78,12 @@ internal class KernelInfoConverter : JsonConverter<KernelInfo>
             }
 
             writer.WriteEndArray();
+        }
+
+        if (value.ConnectionId is { })
+        {
+            writer.WritePropertyName("connectionId");
+            writer.WriteStringValue(value.ConnectionId);
         }
 
         writer.WriteEndObject();

@@ -461,14 +461,19 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                     
                     // Store connectionId in kernel metadata for persistence (but not notebook-level)
                     const notebookDocMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(notebook);
+                    console.log(`[connectSqlProxyForCell] Before setKernelConnectionId - kernelName: ${kernelName}, connectionId: ${kernel.id}`);
+                    console.log(`[connectSqlProxyForCell] Current items:`, notebookDocMetadata.kernelInfo.items.map(i => ({ name: i.name, connectionId: i.connectionId })));
                     const updatedKernelMetadata = metadataUtilities.setKernelConnectionId(notebookDocMetadata, kernelName, kernel.id);
+                    console.log(`[connectSqlProxyForCell] After setKernelConnectionId - items:`, updatedKernelMetadata.kernelInfo.items.map(i => ({ name: i.name, connectionId: i.connectionId })));
                     const updatedMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(
                         updatedKernelMetadata, 
                         notebook.metadata, 
                         metadataUtilities.isIpynbNotebook(notebook)
                     );
+                    console.log(`[connectSqlProxyForCell] Raw metadata to save:`, JSON.stringify(updatedMetadata.polyglot_notebook?.kernelInfo?.items?.find((i: any) => i.name === kernelName)));
                     
                     await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
+                    console.log(`[connectSqlProxyForCell] Metadata updated`);
                     
                     // Set the current cell to use this kernel
                     const selection = vscode.window.activeNotebookEditor?.selection;

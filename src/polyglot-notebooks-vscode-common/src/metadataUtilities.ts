@@ -578,12 +578,31 @@ export function mergeNotebookDocumentMetadata(baseMetadata: NotebookDocumentMeta
 export function setKernelConnectionId(notebookMetadata: NotebookDocumentMetadata, kernelName: string, connectionId: string): NotebookDocumentMetadata {
     const resultMetadata = { ...notebookMetadata };
     resultMetadata.kernelInfo = { ...notebookMetadata.kernelInfo };
-    resultMetadata.kernelInfo.items = notebookMetadata.kernelInfo.items.map(item => {
-        if (item.name === kernelName) {
-            return { ...item, connectionId };
-        }
-        return item;
-    });
+    
+    // Check if kernel exists
+    const existingKernel = notebookMetadata.kernelInfo.items.find(item => item.name === kernelName);
+    
+    if (existingKernel) {
+        // Update existing kernel with connectionId
+        resultMetadata.kernelInfo.items = notebookMetadata.kernelInfo.items.map(item => {
+            if (item.name === kernelName) {
+                return { ...item, connectionId };
+            }
+            return item;
+        });
+    } else {
+        // Kernel doesn't exist yet - add it with connectionId
+        resultMetadata.kernelInfo.items = [
+            ...notebookMetadata.kernelInfo.items,
+            {
+                name: kernelName,
+                aliases: [],
+                languageName: 'T-SQL',
+                connectionId
+            }
+        ];
+    }
+    
     return resultMetadata;
 }
 

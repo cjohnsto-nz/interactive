@@ -11,6 +11,8 @@ import { getDiagnosticCollection } from './diagnostics';
 import { provideSignatureHelp } from './languageServices/signatureHelp';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
 import * as constants from './constants';
+import * as metadataUtilities from './metadataUtilities';
+import * as sqlConnectionTracker from './sqlConnectionTracker';
 
 function getNotebookDcoumentFromCellDocument(cellDocument: vscode.TextDocument): vscode.NotebookDocument | undefined {
     const notebookDocument = vscode.workspace.notebookDocuments.find(notebook => notebook.getCells().some(cell => cell.document === cellDocument));
@@ -34,6 +36,16 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
             if (cell) {
                 const kernelName = getCellKernelName(cell);
                 const documentText = document.getText();
+                
+                // Check if this is a SQL proxy kernel - route to MSSQL extension for completions
+                // Only intercept if it's a proxy connection (has connectionId in metadata)
+                if (kernelName === 'sql' || kernelName?.startsWith('sql-')) {
+                    const isProxyKernel = this.isSqlProxyKernel(notebookDocument, kernelName);
+                    if (isProxyKernel) {
+                        return this.provideSqlCompletions(notebookDocument, cell, kernelName, documentText, position);
+                    }
+                }
+                
                 const completionPromise = provideCompletion(this.clientMapper, kernelName, notebookDocument.uri, documentText, position, this.languageServiceDelay);
                 return ensureErrorsAreRejected(completionPromise, result => {
                     let range: vscode.Range | undefined = undefined;
@@ -61,6 +73,115 @@ export class CompletionItemProvider implements vscode.CompletionItemProvider {
                     return completionList;
                 });
             }
+        }
+    }
+    
+    private isSqlProxyKernel(notebookDocument: vscode.NotebookDocument, kernelName: string): boolean {
+        if (kernelName === 'sql') {
+            // Check if notebook has SQL connection metadata
+            const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebookDocument);
+            return !!sqlMetadata?.connectionId;
+        } else {
+            // Check if kernel has connectionId in metadata
+            const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(notebookDocument);
+            const connectionId = metadataUtilities.getKernelConnectionId(notebookMetadata, kernelName);
+            return !!connectionId;
+        }
+    }
+    
+    private async provideSqlCompletions(
+        notebookDocument: vscode.NotebookDocument,
+        cell: vscode.NotebookCell,
+        kernelName: string,
+        documentText: string,
+        position: vscode.Position
+    ): Promise<vscode.CompletionList | undefined> {
+        try {
+            // Get connection URI for this kernel - try cached first
+            let connectionUri: string | undefined;
+            const notebookUri = notebookDocument.uri.toString();
+            
+            if (kernelName === 'sql') {
+                // Notebook-level SQL connection - try cached URI first
+                connectionUri = sqlConnectionTracker.getProxyConnectionUri(notebookUri);
+            } else {
+                // Cell-level SQL kernel (sql-*) - try cached URI first
+                connectionUri = sqlConnectionTracker.getProxyConnectionUriForKernel(kernelName);
+            }
+            
+            // If no cached URI, we need to connect (but this should be rare after first execution)
+            if (!connectionUri) {
+                // Ensure MSSQL extension is activated
+                const mssqlExtension = vscode.extensions.getExtension('ms-mssql.mssql');
+                if (!mssqlExtension) {
+                    return undefined;
+                }
+                if (!mssqlExtension.isActive) {
+                    await mssqlExtension.activate();
+                }
+                
+                if (kernelName === 'sql') {
+                    const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(notebookDocument);
+                    if (sqlMetadata?.connectionId) {
+                        connectionUri = await vscode.commands.executeCommand<string>(
+                            'mssql.connectionSharing.connect',
+                            'ms-dotnetinteractive.polyglot-notebooks',
+                            sqlMetadata.connectionId
+                        );
+                        if (connectionUri) {
+                            // Cache it
+                            sqlConnectionTracker.setProxyConnection(notebookUri, 'sql', sqlMetadata.connectionId, connectionUri);
+                        }
+                    }
+                } else {
+                    const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(notebookDocument);
+                    const connectionId = metadataUtilities.getKernelConnectionId(notebookMetadata, kernelName);
+                    if (connectionId) {
+                        connectionUri = await vscode.commands.executeCommand<string>(
+                            'mssql.connectionSharing.connect',
+                            'ms-dotnetinteractive.polyglot-notebooks',
+                            connectionId
+                        );
+                        if (connectionUri) {
+                            // Cache it
+                            sqlConnectionTracker.setKernelConnection(kernelName, connectionId, connectionUri);
+                        }
+                    }
+                }
+            }
+            
+            if (!connectionUri) {
+                return undefined;
+            }
+            
+            // Call MSSQL extension for completions
+            const mssqlCompletions = await vscode.commands.executeCommand<any[]>(
+                'mssql.connectionSharing.getCompletions',
+                connectionUri,
+                documentText,
+                position.line,
+                position.character
+            );
+            
+            if (!mssqlCompletions || mssqlCompletions.length === 0) {
+                return undefined;
+            }
+            
+            // Map MSSQL completions to VS Code completions
+            const completionItems: vscode.CompletionItem[] = mssqlCompletions.map((item: any) => {
+                const completionItem = new vscode.CompletionItem(item.label, item.kind !== undefined ? item.kind : vscode.CompletionItemKind.Text);
+                completionItem.detail = item.detail;
+                completionItem.documentation = item.documentation;
+                completionItem.insertText = item.insertText || item.label;
+                completionItem.filterText = item.filterText;
+                completionItem.sortText = item.sortText;
+                return completionItem;
+            });
+            
+            return new vscode.CompletionList(completionItems, false);
+        } catch (e: any) {
+            // Silently fail - fall back to no completions
+            return undefined;
         }
     }
 
@@ -102,6 +223,10 @@ export class HoverProvider implements vscode.HoverProvider {
                 const documentText = document.getText();
                 const hoverPromise = provideHover(this.clientMapper, kernelName, notebookDocument.uri, documentText, position, this.languageServiceDelay);
                 return ensureErrorsAreRejected(hoverPromise, result => {
+                    // Return undefined if no hover content (e.g., from proxy kernels)
+                    if (!result.contents || result.contents.length === 0) {
+                        return undefined;
+                    }
                     const contents = result.isMarkdown
                         ? new vscode.MarkdownString(result.contents)
                         : result.contents;

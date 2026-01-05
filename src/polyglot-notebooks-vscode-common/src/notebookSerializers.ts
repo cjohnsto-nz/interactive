@@ -36,6 +36,23 @@ async function deserializeNotebookByType(parserServer: NotebookParserServer, ser
     const interactiveDocument = await parserServer.parseInteractiveDocument(serializationType, rawData);
     const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromInteractiveDocument(interactiveDocument);
     const createForIpynb = serializationType === commandsAndEvents.DocumentSerializationType.Ipynb;
+    
+    // For DIB files, restore connectionId on kernel items from the raw metadata
+    if (!createForIpynb && interactiveDocument.metadata) {
+        const docMetadata = interactiveDocument.metadata as any;
+        const rawKernelItems = docMetadata.kernelInfo?.items;
+        if (Array.isArray(rawKernelItems)) {
+            for (const rawItem of rawKernelItems) {
+                if (rawItem.connectionId) {
+                    const item = notebookMetadata.kernelInfo.items.find(i => i.name === rawItem.name);
+                    if (item) {
+                        item.connectionId = rawItem.connectionId;
+                    }
+                }
+            }
+        }
+    }
+    
     let rawNotebookDocumentMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(notebookMetadata, {}, createForIpynb);
     
     // For DIB files, restore additional metadata like sqlConnection
@@ -75,6 +92,22 @@ async function serializeNotebookByType(parserServer: NotebookParserServer, seria
     const additionalMetadata: { [key: string]: any } = {};
     if (rawMetadata.polyglot_notebook?.sqlConnection) {
         additionalMetadata.sqlConnection = rawMetadata.polyglot_notebook.sqlConnection;
+    }
+    
+    // For DIB files, preserve connectionId on kernel items from raw metadata
+    const isDib = serializationType === commandsAndEvents.DocumentSerializationType.Dib;
+    if (isDib) {
+        const rawKernelItems = rawMetadata.polyglot_notebook?.kernelInfo?.items;
+        if (Array.isArray(rawKernelItems)) {
+            for (const rawItem of rawKernelItems) {
+                if (rawItem.connectionId) {
+                    const item = notebookMetadata.kernelInfo.items.find(i => i.name === rawItem.name);
+                    if (item) {
+                        item.connectionId = rawItem.connectionId;
+                    }
+                }
+            }
+        }
     }
     
     const interactiveDocument: commandsAndEvents.InteractiveDocument = {

@@ -453,37 +453,38 @@ export class DotNetNotebookKernel {
         let connectionSource = 'none';
         
         if (cellKernelName && cellKernelName.startsWith('sql-') && cellKernelName !== 'sql') {
-            // Per-cell kernel selection - try cache first, reconnect only if needed
-            connectionUri = sqlConnectionTracker.getProxyConnectionUriForKernel(cellKernelName);
-            if (connectionUri) {
-                connectionSource = `kernel:${cellKernelName}`;
-            } else {
-                // Not in cache - get connectionId from metadata and connect
-                const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(cell.notebook);
-                const connectionId = metadataUtilities.getKernelConnectionId(notebookMetadata, cellKernelName);
-                
-                if (connectionId) {
-                    try {
-                        // Ensure MSSQL extension is activated
-                        const mssqlExtension = vscode.extensions.getExtension('ms-mssql.mssql');
-                        if (mssqlExtension && !mssqlExtension.isActive) {
-                            await mssqlExtension.activate();
-                        }
-                        
-                        const freshUri = await vscode.commands.executeCommand<string>(
-                            'mssql.connectionSharing.connect',
-                            'ms-dotnetinteractive.polyglot-notebooks',
-                            connectionId
-                        );
-                        if (freshUri) {
-                            // Cache for future use
-                            sqlConnectionTracker.setKernelConnection(cellKernelName, connectionId, freshUri);
-                            connectionUri = freshUri;
-                            connectionSource = `kernel:${cellKernelName}`;
-                        }
-                    } catch (e: any) {
-                        // Connection failed - will show error below
+            // Per-cell kernel selection - always reconnect to get fresh URI
+            // (MSSQL extension invalidates URIs, so caching doesn't work reliably)
+            const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(cell.notebook);
+            const connectionId = metadataUtilities.getKernelConnectionId(notebookMetadata, cellKernelName);
+            
+            console.log(`[executeProxyCell] Cell kernel ${cellKernelName} - connectionId from metadata: ${connectionId}`);
+            
+            if (connectionId) {
+                try {
+                    // Ensure MSSQL extension is activated
+                    const mssqlExtension = vscode.extensions.getExtension('ms-mssql.mssql');
+                    if (mssqlExtension && !mssqlExtension.isActive) {
+                        await mssqlExtension.activate();
                     }
+                    
+                    console.log(`[executeProxyCell] Calling mssql.connectionSharing.connect with connectionId: ${connectionId}`);
+                    const freshUri = await vscode.commands.executeCommand<string>(
+                        'mssql.connectionSharing.connect',
+                        'ms-dotnetinteractive.polyglot-notebooks',
+                        connectionId
+                    );
+                    console.log(`[executeProxyCell] mssql.connectionSharing.connect returned: ${freshUri}`);
+                    if (freshUri) {
+                        connectionUri = freshUri;
+                        connectionSource = `kernel:${cellKernelName}`;
+                        
+                        // Register the proxy kernel in .NET backend for language services (hover, completions)
+                        await this.ensureProxyKernelRegistered(cell.notebook.uri, cellKernelName);
+                    }
+                } catch (e: any) {
+                    console.log(`[executeProxyCell] Connection failed with error: ${e.message}`);
+                    // Connection failed - will show error below
                 }
             }
             
@@ -497,61 +498,69 @@ export class DotNetNotebookKernel {
                 return;
             }
         } else {
-            // Generic 'sql' kernel - use notebook-level connection
-            connectionUri = sqlConnectionTracker.getProxyConnectionUri(notebookUri);
-            if (connectionUri) {
-                connectionSource = 'notebook';
+            // Generic 'sql' kernel - always reconnect to get fresh URI
+            // (MSSQL extension invalidates URIs, so caching doesn't work reliably)
+            const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(cell.notebook);
+            
+            console.log(`[executeProxyCell] Notebook-level sql kernel - connectionId from metadata: ${sqlMetadata?.connectionId}`);
+            
+            if (sqlMetadata?.connectionId) {
+                try {
+                    const mssqlExtension = vscode.extensions.getExtension('ms-mssql.mssql');
+                    if (mssqlExtension && !mssqlExtension.isActive) {
+                        await mssqlExtension.activate();
+                    }
+                    
+                    console.log(`[executeProxyCell] Calling mssql.connectionSharing.connect with connectionId: ${sqlMetadata.connectionId}`);
+                    connectionUri = await vscode.commands.executeCommand<string>(
+                        'mssql.connectionSharing.connect',
+                        'ms-dotnetinteractive.polyglot-notebooks',
+                        sqlMetadata.connectionId
+                    );
+                    console.log(`[executeProxyCell] mssql.connectionSharing.connect returned: ${connectionUri}`);
+                    
+                    if (connectionUri) {
+                        connectionSource = 'notebook';
+                        
+                        // Register the proxy kernel for base 'sql' in .NET backend for language services
+                        await this.ensureProxyKernelRegistered(cell.notebook.uri, 'sql');
+                    }
+                } catch (e: any) {
+                    console.log(`[executeProxyCell] Connection failed with error: ${e.message}`);
+                }
             }
             
             if (!connectionUri) {
-                // No notebook connection in cache - check if we have a saved connectionId in metadata
-                const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(cell.notebook);
+                // No saved connection or reconnect failed - show picker
+                await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
                 
-                if (sqlMetadata?.connectionId) {
-                    // Auto-reconnect using saved connectionId
+                // After picker, get the connection from metadata again
+                const newSqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(cell.notebook);
+                if (newSqlMetadata?.connectionId) {
                     try {
-                        const mssqlExtension = vscode.extensions.getExtension('ms-mssql.mssql');
-                        if (mssqlExtension && !mssqlExtension.isActive) {
-                            await mssqlExtension.activate();
-                        }
-                        
                         connectionUri = await vscode.commands.executeCommand<string>(
                             'mssql.connectionSharing.connect',
                             'ms-dotnetinteractive.polyglot-notebooks',
-                            sqlMetadata.connectionId
+                            newSqlMetadata.connectionId
                         );
-                        
                         if (connectionUri) {
-                            // Update cache
-                            sqlConnectionTracker.setProxyConnection(
-                                notebookUri,
-                                sqlMetadata.connectionName || 'sql',
-                                sqlMetadata.connectionId,
-                                connectionUri
-                            );
-                            connectionSource = 'notebook (reconnected)';
+                            connectionSource = 'notebook';
                         }
                     } catch (e: any) {
-                        // Auto-reconnect failed - will show picker below
+                        // Connection failed
                     }
                 }
                 
                 if (!connectionUri) {
-                    // No saved connection or reconnect failed - show picker
-                    await vscode.commands.executeCommand('polyglot-notebook.connectSqlProxy');
-                    
-                    connectionUri = sqlConnectionTracker.getProxyConnectionUri(notebookUri);
-                    if (connectionUri) {
-                        connectionSource = 'notebook';
-                    } else {
-                        executionTask.end(false, Date.now());
-                        return;
-                    }
+                    executionTask.end(false, Date.now());
+                    return;
                 }
             }
         }
         
         const query = cell.document.getText();
+        
+        console.log(`[executeProxyCell] Executing query with connectionUri: ${connectionUri}, source: ${connectionSource}`);
         
         try {
             // Execute via MSSQL's executeSimpleQuery command
@@ -560,6 +569,7 @@ export class DotNetNotebookKernel {
                 connectionUri,
                 query
             );
+            console.log(`[executeProxyCell] Query executed successfully`);
             
             if (result && result.rows && result.rows.length > 0) {
                 // Format as HTML table matching Polyglot's TabularDataResource style
@@ -610,11 +620,40 @@ export class DotNetNotebookKernel {
                 executionTask.end(true, Date.now());
             }
         } catch (error: any) {
+            console.log(`[executeProxyCell] Query failed with error: ${error?.message || error}`);
+            console.log(`[executeProxyCell] connectionUri was: ${connectionUri}, source: ${connectionSource}`);
             const errorOutput = new vscode.NotebookCellOutput([
                 vscode.NotebookCellOutputItem.text(`Query failed: ${error?.message || error}`, 'text/plain')
             ]);
             await executionTask.appendOutput(errorOutput);
             executionTask.end(false, Date.now());
+        }
+    }
+
+    // Track which proxy kernels have been registered in the .NET backend
+    private registeredProxyKernels = new Set<string>();
+
+    private async ensureProxyKernelRegistered(notebookUri: vscode.Uri, kernelName: string): Promise<void> {
+        const key = `${notebookUri.toString()}:${kernelName}`;
+        if (this.registeredProxyKernels.has(key)) {
+            return;
+        }
+
+        try {
+            const client = await this.config.clientMapper.getOrAddClient(notebookUri);
+            const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
+            const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
+                commandsAndEvents.SubmitCodeType,
+                {
+                    code,
+                    targetKernelName: '.NET'
+                } as commandsAndEvents.SubmitCode
+            );
+            await client.channel.sender.send(submitCommand);
+            this.registeredProxyKernels.add(key);
+            console.log(`[ensureProxyKernelRegistered] Registered proxy kernel: ${kernelName}`);
+        } catch (e: any) {
+            console.log(`[ensureProxyKernelRegistered] Failed to register proxy kernel ${kernelName}: ${e.message}`);
         }
     }
 
@@ -750,6 +789,9 @@ async function updateNotebookMetadata(notebook: vscode.NotebookDocument, clientM
         const client = await clientMapper.getOrAddClient(notebook.uri);
 
         await updateKernelInfoMetadata(client, notebook);
+        
+        // Register proxy kernels for SQL kernels in metadata for language services
+        await registerSqlProxyKernelsFromMetadata(client, notebook);
     } catch (err) {
         vscode.window.showErrorMessage(`Failed to set document metadata for '${notebook.uri}': ${err}`);
     }
@@ -771,6 +813,8 @@ async function updateKernelInfoMetadata(client: InteractiveClient, document: vsc
                             item.languageName = kernelInfoProduced.kernelInfo.languageName;
                         }
                         item.aliases = kernelInfoProduced.kernelInfo.aliases;
+                        // Preserve connectionId if it exists (for SQL proxy kernels)
+                        // connectionId is not part of KernelInfo, so we keep the existing value
                     }
                 }
 
@@ -799,6 +843,42 @@ async function updateKernelInfoMetadata(client: InteractiveClient, document: vsc
     if (isIpynb &&
         !document.metadata.metadata.language_info) {
         document.metadata.metadata.language_info = { name: "polyglot-notebook" };
+    }
+}
+
+async function registerSqlProxyKernelsFromMetadata(client: InteractiveClient, document: vscode.NotebookDocument): Promise<void> {
+    const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(document);
+    const kernelsToRegister: string[] = [];
+    
+    // Find all sql-* kernels with connectionId in metadata
+    for (const item of notebookMetadata.kernelInfo.items) {
+        if (item.name.startsWith('sql-') && (item as any).connectionId) {
+            kernelsToRegister.push(item.name);
+        }
+    }
+    
+    // Also register base 'sql' kernel if notebook has sqlConnection metadata
+    const sqlMetadata = metadataUtilities.getSqlConnectionMetadataFromNotebookDocument(document);
+    if (sqlMetadata?.connectionId) {
+        kernelsToRegister.push('sql');
+    }
+    
+    // Register each proxy kernel
+    for (const kernelName of kernelsToRegister) {
+        try {
+            const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
+            const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
+                commandsAndEvents.SubmitCodeType,
+                {
+                    code,
+                    targetKernelName: '.NET'
+                } as commandsAndEvents.SubmitCode
+            );
+            await client.channel.sender.send(submitCommand);
+            console.log(`[registerSqlProxyKernelsFromMetadata] Registered proxy kernel: ${kernelName}`);
+        } catch (e: any) {
+            console.log(`[registerSqlProxyKernelsFromMetadata] Failed to register proxy kernel ${kernelName}: ${e.message}`);
+        }
     }
 }
 
