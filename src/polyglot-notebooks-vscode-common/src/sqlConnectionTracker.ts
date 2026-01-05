@@ -12,6 +12,13 @@ interface SqlConnectionInfo {
 }
 const notebookSqlConnections = new Map<string, SqlConnectionInfo>();
 
+// Track connection URIs by connection ID (GUID) - shared across all notebooks
+const connectionUrisByConnectionId = new Map<string, string>();
+
+// Track which kernel name is associated with which connection ID
+// Key: kernelName (e.g., "sql-AllianceProd"), Value: connectionId (GUID)
+const kernelToConnectionId = new Map<string, string>();
+
 // Track saved connection info per notebook (not yet connected)
 interface SavedConnectionInfo {
     connectionName: string;
@@ -27,6 +34,8 @@ export function setConnection(notebookUri: string, connectionName: string, kerne
 
 export function setProxyConnection(notebookUri: string, connectionName: string, connectionId: string, connectionUri: string): void {
     const kernelName = connectionName.replace(/[^a-zA-Z0-9_]/g, '_');
+    const fullKernelName = `sql-${kernelName}`;
+    
     notebookSqlConnections.set(notebookUri, { 
         connectionName, 
         kernelName,
@@ -34,6 +43,11 @@ export function setProxyConnection(notebookUri: string, connectionName: string, 
         connectionId,
         connectionUri
     });
+    // Track connection URI by connection ID (GUID) for per-cell kernel selection
+    connectionUrisByConnectionId.set(connectionId, connectionUri);
+    // Track kernel name to connection ID mapping
+    kernelToConnectionId.set(fullKernelName, connectionId);
+    
     // Clear saved connection since we're now connected
     notebookSavedConnections.delete(notebookUri);
 }
@@ -45,6 +59,19 @@ export function isProxyConnection(notebookUri: string): boolean {
 export function getProxyConnectionUri(notebookUri: string): string | undefined {
     const conn = notebookSqlConnections.get(notebookUri);
     return conn?.proxyMode ? conn.connectionUri : undefined;
+}
+
+export function getProxyConnectionUriForKernel(kernelName: string): string | undefined {
+    const connectionId = kernelToConnectionId.get(kernelName);
+    if (connectionId) {
+        return connectionUrisByConnectionId.get(connectionId);
+    }
+    return undefined;
+}
+
+export function setKernelConnection(kernelName: string, connectionId: string, connectionUri: string): void {
+    kernelToConnectionId.set(kernelName, connectionId);
+    connectionUrisByConnectionId.set(connectionId, connectionUri);
 }
 
 export function setSavedConnection(notebookUri: string, connectionName: string, connectionId?: string): void {

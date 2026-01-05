@@ -574,6 +574,23 @@ export function mergeNotebookDocumentMetadata(baseMetadata: NotebookDocumentMeta
     return sortInPlace(resultMetadata);
 }
 
+export function setKernelConnectionId(notebookMetadata: NotebookDocumentMetadata, kernelName: string, connectionId: string): NotebookDocumentMetadata {
+    const resultMetadata = { ...notebookMetadata };
+    resultMetadata.kernelInfo = { ...notebookMetadata.kernelInfo };
+    resultMetadata.kernelInfo.items = notebookMetadata.kernelInfo.items.map(item => {
+        if (item.name === kernelName) {
+            return { ...item, connectionId };
+        }
+        return item;
+    });
+    return resultMetadata;
+}
+
+export function getKernelConnectionId(notebookMetadata: NotebookDocumentMetadata, kernelName: string): string | undefined {
+    const kernelInfo = notebookMetadata.kernelInfo.items.find(item => item.name === kernelName);
+    return kernelInfo?.connectionId;
+}
+
 export function mergeRawMetadata(baseMetadata: { [key: string]: any }, metadataWithNewValues: { [key: string]: any }): { [key: string]: any } {
     const resultMetadata = { ...baseMetadata };
     for (const key in metadataWithNewValues) {

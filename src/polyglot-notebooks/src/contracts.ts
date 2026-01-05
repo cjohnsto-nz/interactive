@@ -36,7 +36,7 @@ export const SubmitCodeType = "SubmitCode";
 export const UpdateDisplayedValueType = "UpdateDisplayedValue";
 
 export type KernelCommandType =
-      typeof AddPackageType
+    typeof AddPackageType
     | typeof AddPackageSourceType
     | typeof CancelType
     | typeof ClearValuesType
@@ -243,6 +243,7 @@ export interface DocumentKernelInfo {
     aliases: Array<string>;
     languageName?: string;
     name: string;
+    connectionId?: string; // MSSQL connection ID (GUID) for SQL proxy kernels
 }
 
 export interface NotebookParseRequest extends NotebookParseOrSerializeRequest {
@@ -306,7 +307,7 @@ export const ValueInfosProducedType = "ValueInfosProduced";
 export const ValueProducedType = "ValueProduced";
 
 export type KernelEventType =
-      typeof AssemblyProducedType
+    typeof AssemblyProducedType
     | typeof CodeExpansionInfosProducedType
     | typeof CodeSubmissionReceivedType
     | typeof CommandFailedType

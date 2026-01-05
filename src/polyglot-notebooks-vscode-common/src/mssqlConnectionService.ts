@@ -80,32 +80,14 @@ export class MssqlConnectionService {
      * Get a cached connection string by connection name
      */
     public getCachedConnectionString(connectionName: string): string | undefined {
-        const cached = this.connectionStringCache.get(connectionName);
-        console.log(`[Polyglot SQL] getCachedConnectionString("${connectionName}"): ${cached ? 'FOUND (cached)' : 'NOT FOUND'}`);
-        if (cached) {
-            // Log masked connection string for debugging
-            const masked = cached
-                .replace(/Password=[^;]*/gi, 'Password=***')
-                .replace(/AccessToken=[^;]*/gi, 'AccessToken=***');
-            console.log(`[Polyglot SQL] Cached connection string: ${masked}`);
-        }
-        return cached;
+        return this.connectionStringCache.get(connectionName);
     }
 
     /**
      * Cache a connection string for the session
      */
     public cacheConnectionString(connectionName: string, connectionString: string): void {
-        console.log(`[Polyglot SQL] Caching connection string for "${connectionName}"`);
-        // Log masked connection string for debugging
-        const masked = connectionString
-            .replace(/Password=[^;]*/gi, 'Password=***')
-            .replace(/AccessToken=[^;]*/gi, 'AccessToken=***');
-        console.log(`[Polyglot SQL] Connection string to cache: ${masked}`);
-        console.log(`[Polyglot SQL] Contains AccessToken: ${connectionString.toLowerCase().includes('accesstoken')}`);
-
         this.connectionStringCache.set(connectionName, connectionString);
-        Logger.default.info(`Cached connection string for "${connectionName}"`);
     }
 
     /**
@@ -143,7 +125,6 @@ export class MssqlConnectionService {
             // Ensure MSSQL extension is activated
             const api = await this.getMssqlExtensionApi();
             if (!api) {
-                console.log('[Polyglot SQL] MSSQL extension not available');
                 return [];
             }
 
@@ -156,14 +137,11 @@ export class MssqlConnectionService {
             );
             
             if (!kernels) {
-                console.log('[Polyglot SQL] getAvailableKernels returned no kernels');
                 return [];
             }
             
-            console.log(`[Polyglot SQL] Got ${kernels.length} available kernels from MSSQL`);
             return kernels;
         } catch (error: any) {
-            console.log('[Polyglot SQL] Error getting available kernels:', error?.message || error);
             return [];
         }
     }
@@ -195,8 +173,6 @@ export class MssqlConnectionService {
             if (!connectionUri) {
                 throw new Error('Failed to connect to database');
             }
-            
-            console.log(`[Polyglot SQL] Connected, uri: ${connectionUri}`);
 
             // Execute the query via command
             const result = await vscode.commands.executeCommand<any>(
@@ -207,7 +183,6 @@ export class MssqlConnectionService {
             
             return result;
         } catch (error: any) {
-            console.log('[Polyglot SQL] Error executing query on kernel:', error?.message || error);
             throw error;
         }
     }
@@ -265,9 +240,6 @@ export class MssqlConnectionService {
                 return undefined;
             }
 
-            // Log connection info
-            console.log(`[Polyglot SQL] Connection selected: id=${connectionId}, profileName=${connectionInfo.profileName}, server=${connectionInfo.server}`);
-
             // Use connectByConnectionId which handles everything (name derivation, token retrieval)
             return await this.connectByConnectionId(connectionId);
         } catch (error) {
@@ -306,61 +278,44 @@ export class MssqlConnectionService {
             return undefined;
         }
 
-        console.log(`[Polyglot SQL] Connecting by connectionId: ${connectionId}`);
-        
         // Look up the connection details from mssql settings
         const config = vscode.workspace.getConfiguration('mssql');
         const connections = config.get<any[]>('connections') || [];
         const conn = connections.find((c: any) => c.id === connectionId);
         
         if (!conn) {
-            console.log(`[Polyglot SQL] Connection ${connectionId} not found in mssql settings`);
             return undefined;
         }
         
         // Derive display name from mssql connection: profileName or "database (server)"
         const name = conn.profileName || `${conn.database} (${conn.server})`;
-        console.log(`[Polyglot SQL] Found connection: ${name}, authType: ${conn.authenticationType}`);
         
         const extensionId = 'ms-dotnettools.dotnet-interactive-vscode';
 
         try {
             // Get the connection string
-            console.log(`[Polyglot SQL] Calling connectionSharing.getConnectionString()...`);
             let connectionString = await api.connectionSharing.getConnectionString(extensionId, connectionId);
             
             if (!connectionString) {
-                console.log('[Polyglot SQL] connectionSharing.getConnectionString() returned no string');
                 return undefined;
             }
 
             // For Azure MFA connections, get the access token from MSSQL's cached auth
             if (conn.authenticationType === 'AzureMFA') {
-                console.log(`[Polyglot SQL] Calling connectionSharing.getAccessToken()...`);
                 // Use type assertion since getAccessToken is a new API we added to MSSQL extension
                 const connectionSharingAny = api.connectionSharing as any;
                 const accessToken = connectionSharingAny.getAccessToken ? await connectionSharingAny.getAccessToken(extensionId, connectionId) : undefined;
                 
                 if (accessToken) {
-                    console.log('[Polyglot SQL] Got access token from MSSQL extension');
                     // Remove Authentication=ActiveDirectoryInteractive and add AccessToken
                     connectionString = connectionString.replace(/Authentication\s*=\s*ActiveDirectoryInteractive\s*;?/gi, '');
                     connectionString = connectionString.trim().replace(/;$/, '');
                     connectionString = `${connectionString};AccessToken=${accessToken}`;
-                } else {
-                    console.log('[Polyglot SQL] No access token returned - MSSQL will handle auth');
                 }
             }
-            
-            const maskedConnStr = connectionString
-                .replace(/Password=[^;]*/gi, 'Password=***')
-                .replace(/AccessToken=[^;]*/gi, 'AccessToken=***');
-            console.log('[Polyglot SQL] Got connection string:', maskedConnStr);
-            console.log('[Polyglot SQL] Contains AccessToken:', connectionString.toLowerCase().includes('accesstoken'));
 
             return { name: name!, connectionString, connectionId };
         } catch (error: any) {
-            console.log('[Polyglot SQL] Error using connectionSharing API:', error?.message || error);
             return undefined;
         }
     }
