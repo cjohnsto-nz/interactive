@@ -27,6 +27,13 @@ public class ConnectMssqlProxyDirective : ConnectKernelDirective<ConnectMssqlPro
     {
         var kernelName = connectCommand.ConnectedKernelName;
         
+        // Only cell-level SQL kernels (sql-*) are supported
+        // The base 'sql' kernel is not supported as a proxy kernel
+        if (kernelName == "sql")
+        {
+            return Task.FromResult<IEnumerable<Kernel>>(Array.Empty<Kernel>());
+        }
+        
         // Check if kernel already exists as a proxy kernel
         var existingKernel = context.HandlingKernel?.RootKernel.FindKernelByName(kernelName);
         if (existingKernel is MssqlProxyKernel)
@@ -34,44 +41,8 @@ public class ConnectMssqlProxyDirective : ConnectKernelDirective<ConnectMssqlPro
             return Task.FromResult<IEnumerable<Kernel>>(Array.Empty<Kernel>());
         }
 
-        // If the requested name is "sql", we need to use a different internal name
-        // since "sql" might conflict with an existing kernel
-        string actualKernelName = kernelName;
-        string[] aliases = null;
-        
-        if (kernelName == "sql")
-        {
-            // Use a unique internal name and add "sql" as an alias
-            actualKernelName = "sql-proxy";
-            aliases = new[] { "sql" };
-        }
-
-        // Check if the actual kernel name already exists
-        var existingActualKernel = context.HandlingKernel?.RootKernel.FindKernelByName(actualKernelName);
-        if (existingActualKernel is MssqlProxyKernel existingProxy)
-        {
-            // Add alias if needed
-            if (aliases != null)
-            {
-                foreach (var alias in aliases)
-                {
-                    existingProxy.KernelInfo.NameAndAliases.Add(alias);
-                }
-            }
-            return Task.FromResult<IEnumerable<Kernel>>(Array.Empty<Kernel>());
-        }
-
         // Create the proxy kernel
-        var proxyKernel = new MssqlProxyKernel(actualKernelName);
-        
-        // Add aliases
-        if (aliases != null)
-        {
-            foreach (var alias in aliases)
-            {
-                proxyKernel.KernelInfo.NameAndAliases.Add(alias);
-            }
-        }
+        var proxyKernel = new MssqlProxyKernel(kernelName);
 
         return Task.FromResult<IEnumerable<Kernel>>(new[] { proxyKernel });
     }
