@@ -147,9 +147,9 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
 
         // Add MSSQL Extension option for creating new SQL proxy kernels
         const mssqlExtensionOption = {
-            label: 'MSSQL Extension (Proxy Mode)',
-            description: 'Connect to SQL Server using MSSQL extension',
-            iconPath: new vscode.ThemeIcon('database'),
+            label: 'MSSQL Extension',
+            description: 'Connect a saved SQL Server connection from the MSSQL extension',
+            iconPath: new vscode.ThemeIcon('extensions'),
             isMssqlExtension: true
         };
 
