@@ -21,6 +21,7 @@ import { getMssqlConnectionService } from './mssqlConnectionService';
 import { Logger } from './polyglot-notebooks/logger';
 import * as sqlConnectionTracker from './sqlConnectionTracker';
 import * as vscodeNotebookManagement from './vscodeNotebookManagement';
+import * as commandsAndEvents from './polyglot-notebooks/commandsAndEvents';
 
 let sqlConnectionStatusBar: vscode.StatusBarItem | undefined;
 
@@ -324,7 +325,40 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                     }
                     
                     // Step 3: Store connection state
+                    const kernelName = `sql-${kernel.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
                     sqlConnectionTracker.setProxyConnection(notebook.uri.toString(), kernel.name, kernel.id, connectionUri);
+                    
+                    // Step 4: Register the proxy kernel with the .NET kernel via #!connect mssql-proxy
+                    // Send directly to .NET process via channel - events flow back through channel receiver
+                    // which has the KernelInfoProduced handler that updates the kernel selector
+                    try {
+                        const client = await clientMapper.getOrAddClient(notebook.uri);
+                        const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
+                        const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
+                            commandsAndEvents.SubmitCodeType,
+                            {
+                                code: code,
+                                targetKernelName: '.NET'  // Send to composite kernel
+                            } as commandsAndEvents.SubmitCode
+                        );
+                        await client.channel.sender.send(submitCommand);
+                        console.log(`[Polyglot SQL] Registered proxy kernel ${kernelName}`);
+                    } catch (e: any) {
+                        console.log(`[Polyglot SQL] Error registering proxy kernel: ${e?.message || e}`);
+                    }
+                    
+                    // Step 5: Update metadata to ensure proxyMode is set (for legacy notebooks)
+                    const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
+                        notebook.metadata,
+                        { 
+                            connectionId: kernel.id, 
+                            connectionName: kernel.name, 
+                            connectionProfileName: kernel.name,
+                            proxyMode: true
+                        }
+                    );
+                    await vscodeNotebookManagement.updateNotebookMetadata(notebook.uri, updatedMetadata);
+                    
                     updateSqlConnectionStatusBar();
                     vscode.window.showInformationMessage(`SQL connected: ${kernel.name}`);
                 }
@@ -500,12 +534,32 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
                     }
                     
                     // Store as proxy connection in memory
+                    const kernelName = `sql-${selected.kernel.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
                     sqlConnectionTracker.setProxyConnection(
                         notebook.uri.toString(),
                         selected.kernel.name,
                         selected.kernel.id,
                         connectionUri
                     );
+                    
+                    // Register the proxy kernel with the .NET kernel via #!connect mssql-proxy
+                    // Send directly to .NET process via channel - events flow back through channel receiver
+                    // which has the KernelInfoProduced handler that updates the kernel selector
+                    try {
+                        const client = await clientMapper.getOrAddClient(notebook.uri);
+                        const code = `#!connect mssql-proxy --kernel-name ${kernelName}`;
+                        const submitCommand = new commandsAndEvents.KernelCommandEnvelope(
+                            commandsAndEvents.SubmitCodeType,
+                            {
+                                code: code,
+                                targetKernelName: '.NET'  // Send to composite kernel
+                            } as commandsAndEvents.SubmitCode
+                        );
+                        await client.channel.sender.send(submitCommand);
+                        console.log(`[Polyglot SQL] Registered proxy kernel ${kernelName}`);
+                    } catch (e: any) {
+                        console.log(`[Polyglot SQL] Error registering proxy kernel: ${e?.message || e}`);
+                    }
                     
                     // Save to notebook metadata for persistence
                     const updatedMetadata = metadataUtilities.mergeSqlConnectionMetadataIntoNotebookMetadata(
@@ -530,6 +584,7 @@ export function registerKernelCommands(context: vscode.ExtensionContext, clientM
             vscode.window.showErrorMessage(`Error: ${error?.message || error}`);
         }
     }));
+
 }
 
 export function registerFileCommands(context: vscode.ExtensionContext, parserServer: NotebookParserServer, clientMapper: ClientMapper) {
