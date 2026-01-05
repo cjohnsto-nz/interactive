@@ -55,20 +55,6 @@ async function deserializeNotebookByType(parserServer: NotebookParserServer, ser
     
     let rawNotebookDocumentMetadata = metadataUtilities.getMergedRawNotebookDocumentMetadataFromNotebookDocumentMetadata(notebookMetadata, {}, createForIpynb);
     
-    // For DIB files, restore additional metadata like sqlConnection
-    if (!createForIpynb && interactiveDocument.metadata) {
-        const docMetadata = interactiveDocument.metadata as any;
-        if (docMetadata.sqlConnection) {
-            rawNotebookDocumentMetadata = {
-                ...rawNotebookDocumentMetadata,
-                polyglot_notebook: {
-                    ...(rawNotebookDocumentMetadata.polyglot_notebook || {}),
-                    sqlConnection: docMetadata.sqlConnection
-                }
-            };
-        }
-    }
-    
     const notebookData: vscode.NotebookData = {
         cells: interactiveDocument.elements.map(element => toVsCodeNotebookCellData(element)),
         metadata: rawNotebookDocumentMetadata
@@ -87,14 +73,8 @@ async function serializeNotebookByType(parserServer: NotebookParserServer, seria
     };
     const notebookMetadata = metadataUtilities.getNotebookDocumentMetadataFromNotebookDocument(fakeNotebookDocument);
     
-    // For DIB files, preserve additional metadata like sqlConnection
-    const rawMetadata = data.metadata ?? {};
-    const additionalMetadata: { [key: string]: any } = {};
-    if (rawMetadata.polyglot_notebook?.sqlConnection) {
-        additionalMetadata.sqlConnection = rawMetadata.polyglot_notebook.sqlConnection;
-    }
-    
     // For DIB files, preserve connectionId on kernel items from raw metadata
+    const rawMetadata = data.metadata ?? {};
     const isDib = serializationType === commandsAndEvents.DocumentSerializationType.Dib;
     if (isDib) {
         const rawKernelItems = rawMetadata.polyglot_notebook?.kernelInfo?.items;
@@ -112,10 +92,7 @@ async function serializeNotebookByType(parserServer: NotebookParserServer, seria
     
     const interactiveDocument: commandsAndEvents.InteractiveDocument = {
         elements: data.cells.map(toInteractiveDocumentElement),
-        metadata: {
-            ...notebookMetadata,
-            ...additionalMetadata
-        }
+        metadata: notebookMetadata
     };
     const rawData = await parserServer.serializeNotebook(serializationType, eol, interactiveDocument);
     return rawData;
